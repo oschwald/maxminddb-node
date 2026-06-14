@@ -179,6 +179,16 @@ export interface NetworkIterationOptions {
   skipEmptyValues?: boolean;
 }
 
+export interface NetworkPageOptions extends NetworkIterationOptions {
+  limit?: number;
+  offset?: number;
+}
+
+export interface NetworkPage<T extends Response = Response> {
+  records: Array<[string, T | null]>;
+  nextOffset: number | null;
+}
+
 export declare const MODE_AUTO: 'auto';
 export declare const MODE_MMAP: 'mmap';
 export declare const MODE_MEMORY: 'memory';
@@ -204,6 +214,8 @@ export declare class Reader<T extends Response = Response> {
     cidr: string,
     options?: NetworkIterationOptions,
   ): Array<[string, T | null]>;
+  networksPage(options?: NetworkPageOptions): NetworkPage<T>;
+  withinPage(cidr: string, options?: NetworkPageOptions): NetworkPage<T>;
 }
 
 export declare function open<T extends Response = Response>(

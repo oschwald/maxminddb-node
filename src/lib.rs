@@ -99,6 +99,23 @@ impl ReaderSource {
             ReaderSource::Memory(reader) => collect_networks_for_reader(reader, cidr, options),
         }
     }
+
+    fn collect_networks_page(
+        &self,
+        cidr: Option<ipnetwork::IpNetwork>,
+        options: WithinOptions,
+        limit: usize,
+        offset: usize,
+    ) -> std::result::Result<NetworkRecordPage<'_>, MaxMindDbError> {
+        match self {
+            ReaderSource::Mmap(reader) => {
+                collect_networks_page_for_reader(reader, cidr, options, limit, offset)
+            }
+            ReaderSource::Memory(reader) => {
+                collect_networks_page_for_reader(reader, cidr, options, limit, offset)
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -126,6 +143,11 @@ enum OwnedPathElement {
 struct NetworkRecord<'de> {
     network: String,
     record: Option<MmdbValue<'de>>,
+}
+
+struct NetworkRecordPage<'de> {
+    records: Vec<NetworkRecord<'de>>,
+    next_offset: Option<usize>,
 }
 
 struct RecordCache {
@@ -469,6 +491,33 @@ impl NativeReader {
         network_records_to_js(env, records)
     }
 
+    #[napi(js_name = "networksPage")]
+    pub fn networks_page<'env>(
+        &self,
+        env: &'env Env,
+        cidr: Option<String>,
+        include_aliased_networks: Option<bool>,
+        include_networks_without_data: Option<bool>,
+        skip_empty_values: Option<bool>,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Unknown<'env>> {
+        let cidr = cidr.as_deref().map(parse_network).transpose()?;
+        let options = make_within_options(
+            include_aliased_networks,
+            include_networks_without_data,
+            skip_empty_values,
+        );
+        let reader = self
+            .reader
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        let page = reader
+            .collect_networks_page(cidr, options, limit as usize, offset as usize)
+            .map_err(lookup_error)?;
+        network_record_page_to_js(env, page)
+    }
+
     #[napi]
     pub fn metadata<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
         let reader = self
@@ -797,6 +846,57 @@ fn collect_networks_for_reader<'de, S: AsRef<[u8]>>(
     Ok(records)
 }
 
+fn collect_networks_page_for_reader<'de, S: AsRef<[u8]>>(
+    reader: &'de MaxMindReader<S>,
+    cidr: Option<ipnetwork::IpNetwork>,
+    options: WithinOptions,
+    limit: usize,
+    offset: usize,
+) -> std::result::Result<NetworkRecordPage<'de>, MaxMindDbError> {
+    let mut iter = match cidr {
+        Some(cidr) => reader.within(cidr, options)?,
+        None => reader.networks(options)?,
+    };
+
+    for _ in 0..offset {
+        if let Some(result) = iter.next() {
+            result?;
+        } else {
+            return Ok(NetworkRecordPage {
+                records: Vec::new(),
+                next_offset: None,
+            });
+        }
+    }
+
+    let mut records = Vec::with_capacity(limit);
+    for _ in 0..limit {
+        let Some(result) = iter.next() else {
+            return Ok(NetworkRecordPage {
+                records,
+                next_offset: None,
+            });
+        };
+        let lookup = result?;
+        let network = lookup.network()?.to_string();
+        let record = lookup.decode::<MmdbValue<'_>>()?;
+        records.push(NetworkRecord { network, record });
+    }
+
+    let next_offset = match iter.next() {
+        Some(result) => {
+            result?;
+            Some(offset + records.len())
+        }
+        None => None,
+    };
+
+    Ok(NetworkRecordPage {
+        records,
+        next_offset,
+    })
+}
+
 fn network_records_to_js<'env>(
     env: &'env Env,
     records: Vec<NetworkRecord<'_>>,
@@ -813,6 +913,22 @@ fn network_records_to_js<'env>(
         })
         .collect::<Result<Vec<_>>>()?;
     Array::from_vec(env, values)?.into_unknown(env)
+}
+
+fn network_record_page_to_js<'env>(
+    env: &'env Env,
+    page: NetworkRecordPage<'_>,
+) -> Result<Unknown<'env>> {
+    let records = network_records_to_js(env, page.records)?;
+    let next_offset = match page.next_offset {
+        Some(offset) => (offset as f64).into_unknown(env)?,
+        None => Null.into_unknown(env)?,
+    };
+
+    let mut object = Object::new(env)?;
+    object.set_named_property("records", records)?;
+    object.set_named_property("nextOffset", next_offset)?;
+    object.into_unknown(env)
 }
 
 fn make_within_options(

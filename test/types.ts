@@ -24,6 +24,14 @@ async function checkTypes() {
   opened.getManyPath(['8.8.8.8'], ['country', 'iso_code']);
   opened.within('8.8.8.0/24');
   opened.networks({ skipEmptyValues: true });
+  const page = opened.withinPage('8.8.8.0/24', {
+    limit: 100,
+    offset: 0,
+    skipEmptyValues: true,
+  });
+  const nextOffset: number | null = page.nextOffset;
+  page.records[0]?.[1]?.country?.iso_code;
+  void nextOffset;
 
   const fromBuffer = new Reader<CityResponse>(Buffer.alloc(0));
   fromBuffer.close();

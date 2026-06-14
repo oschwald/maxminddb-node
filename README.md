@@ -56,6 +56,14 @@ reader.getManyPath(['8.8.8.8', '1.1.1.1'], ['country', 'iso_code']);
 for (const [network, record] of reader.within('81.2.69.142/31')) {
   console.log(network, record);
 }
+
+let page = reader.withinPage('81.2.69.0/24', { limit: 100 });
+while (page.nextOffset !== null) {
+  page = reader.withinPage('81.2.69.0/24', {
+    limit: 100,
+    offset: page.nextOffset,
+  });
+}
 ```
 
 Path elements are strings for map keys and numbers for array indexes. Negative
@@ -64,6 +72,9 @@ indexes count from the end of an array.
 For high-volume lookup workloads, prefer `getMany()` or `getManyPath()` when
 you can batch IPs. They cross the native boundary once for the whole batch and
 are significantly faster than calling `get()` in a JavaScript loop.
+
+For large network walks, prefer `networksPage()` or `withinPage()` over
+materializing the full `networks()`/`within()` result at once.
 
 ## Open Modes
 

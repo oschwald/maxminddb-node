@@ -127,6 +127,18 @@ function normalizeNetworkOptions(options = {}) {
   ];
 }
 
+function normalizeNetworkPageOptions(options = {}) {
+  const limit = options.limit ?? 1000;
+  const offset = options.offset ?? 0;
+  if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_CACHE_MAX) {
+    throw new Error('options.limit should be a positive 32-bit integer');
+  }
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > MAX_CACHE_MAX) {
+    throw new Error('options.offset should be a non-negative 32-bit integer');
+  }
+  return [...normalizeNetworkOptions(options), limit, offset];
+}
+
 function waitForFile(filepath) {
   for (let i = 0; i < 3; i++) {
     if (fs.existsSync(filepath)) {
@@ -250,6 +262,14 @@ class Reader {
 
   within(cidr, options = {}) {
     return this._reader.networks(cidr, ...normalizeNetworkOptions(options));
+  }
+
+  networksPage(options = {}) {
+    return this._reader.networksPage(null, ...normalizeNetworkPageOptions(options));
+  }
+
+  withinPage(cidr, options = {}) {
+    return this._reader.networksPage(cidr, ...normalizeNetworkPageOptions(options));
   }
 }
 
