@@ -107,4 +107,7 @@ npm run build
 npm test
 npm run typecheck
 npm run bench -- --compare-node-maxmind
+npm run bench -- --save-baseline /tmp/maxmind-rs-baseline.json
+npm run bench -- --baseline /tmp/maxmind-rs-baseline.json --min-ratio 0.9
+npm run --silent bench -- --json > bench-results.json
 ```
