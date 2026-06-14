@@ -47,9 +47,9 @@ function loadNativeBinding() {
   }
 
   const error = new Error(
-    `Unable to load maxmind-rs native binding. Tried:\n${attempted.join('\n')}`
+    `Unable to load maxminddb native binding. Tried:\n${attempted.join('\n')}`
   );
-  error.code = 'ERR_MAXMIND_RS_NATIVE_BINDING_NOT_FOUND';
+  error.code = 'ERR_MAXMINDDB_NATIVE_BINDING_NOT_FOUND';
   throw error;
 }
 
@@ -217,7 +217,7 @@ class PathLookup {
 class Reader {
   constructor(database, options = {}) {
     if (!Buffer.isBuffer(database)) {
-      throw new Error(`maxmind-rs expects an instance of Buffer, got: ${typeof database}`);
+      throw new Error(`maxminddb expects an instance of Buffer, got: ${typeof database}`);
     }
     this._mode = MODE_BUFFER;
     this._filepath = null;

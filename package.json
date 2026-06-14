@@ -1,5 +1,5 @@
 {
-  "name": "maxmind-rs",
+  "name": "maxminddb",
   "version": "0.1.0",
   "description": "Rust-backed Node.js reader for MaxMind DB files",
   "main": "index.js",

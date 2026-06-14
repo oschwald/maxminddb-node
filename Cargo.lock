@@ -184,19 +184,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "maxmind-rs"
-version = "0.1.0"
-dependencies = [
- "ipnetwork",
- "lru",
- "maxminddb",
- "napi",
- "napi-build",
- "napi-derive",
- "serde",
-]
-
-[[package]]
 name = "maxminddb"
 version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -208,6 +195,19 @@ dependencies = [
  "memmap2",
  "serde",
  "thiserror",
+]
+
+[[package]]
+name = "maxminddb-node"
+version = "0.1.0"
+dependencies = [
+ "ipnetwork",
+ "lru",
+ "maxminddb",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "serde",
 ]
 
 [[package]]

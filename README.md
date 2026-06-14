@@ -1,4 +1,4 @@
-# maxmind-rs
+# maxminddb
 
 Rust-backed Node.js reader for MaxMind DB files.
 
@@ -9,13 +9,13 @@ and network iteration.
 ## Install
 
 ```sh
-npm install maxmind-rs
+npm install maxminddb
 ```
 
 ## Usage
 
 ```js
-const maxmind = require('maxmind-rs');
+const maxmind = require('maxminddb');
 
 const reader = await maxmind.open('/path/to/GeoIP2-City.mmdb');
 
@@ -136,7 +136,7 @@ run with 200,000 generated IPv4 lookups against `/var/lib/GeoIP`, this module
 had much faster open times and lower RSS than `node-maxmind`, while cached
 single-record lookup throughput was still lower:
 
-| Database | maxmind-rs default cache | node-maxmind default cache | maxmind-rs cache:100k | node-maxmind cache:100k |
+| Database | maxminddb default cache | node-maxmind default cache | maxminddb cache:100k | node-maxmind cache:100k |
 | --- | ---: | ---: | ---: | ---: |
 | GeoIP2-City | 370k/s | 441k/s | 632k/s | 869k/s |
 | GeoLite2-City | 452k/s | 498k/s | 715k/s | 1.07M/s |
@@ -168,8 +168,8 @@ npm run build
 npm test
 npm run typecheck
 npm run bench -- --compare-node-maxmind
-npm run bench -- --save-baseline /tmp/maxmind-rs-baseline.json
-npm run bench -- --baseline /tmp/maxmind-rs-baseline.json --min-ratio 0.9
+npm run bench -- --save-baseline /tmp/maxminddb-baseline.json
+npm run bench -- --baseline /tmp/maxminddb-baseline.json --min-ratio 0.9
 npm run --silent bench -- --json > bench-results.json
 ```
 

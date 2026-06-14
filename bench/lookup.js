@@ -231,7 +231,7 @@ async function benchDatabase(db, options, ips, nodeMaxmind) {
   };
 
   const uncached = await benchOpen(
-    'maxmind-rs cache:false',
+    'maxminddb cache:false',
     () => maxmind.open(db, { cache: false }),
     dbResult,
     options
@@ -248,7 +248,7 @@ async function benchDatabase(db, options, ips, nodeMaxmind) {
   await closeMaybe(uncached);
 
   const cached = await benchOpen(
-    'maxmind-rs default cache',
+    'maxminddb default cache',
     () => maxmind.open(db),
     dbResult,
     options
@@ -293,7 +293,7 @@ async function benchDatabase(db, options, ips, nodeMaxmind) {
   await closeMaybe(cached);
 
   const largerCache = await benchOpen(
-    'maxmind-rs cache:100k',
+    'maxminddb cache:100k',
     () => maxmind.open(db, { cache: { max: 100_000 } }),
     dbResult,
     options

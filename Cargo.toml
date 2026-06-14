@@ -1,5 +1,5 @@
 [package]
-name = "maxmind-rs"
+name = "maxminddb-node"
 version = "0.1.0"
 edition = "2021"
 license = "ISC"
@@ -7,7 +7,7 @@ description = "Rust-backed Node.js reader for MaxMind DB files"
 
 [lib]
 crate-type = ["cdylib"]
-name = "maxmind_rs"
+name = "maxminddb_node"
 
 [dependencies]
 ipnetwork = "0.21.1"

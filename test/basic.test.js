@@ -274,7 +274,7 @@ test('keeps legacy API errors', () => {
 });
 
 test('rejects gzip files in open', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxmind-rs-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
   const gzipPath = path.join(dir, 'db.mmdb.gz');
   fs.writeFileSync(gzipPath, Buffer.from([0x1f, 0x8b, 0x08, 0x00]));
 
@@ -320,7 +320,7 @@ test('records and clears watched reload failures', async () => {
   const originalWatchFile = fs.watchFile;
   const originalUnwatchFile = fs.unwatchFile;
   const watched = [];
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxmind-rs-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
   const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
   const dbPath = path.join(dir, 'GeoIP2-City-Test.mmdb');
   const database = fs.readFileSync(sourcePath);
@@ -368,7 +368,7 @@ test('serializes watched buffer reloads', async () => {
   const originalUnwatchFile = fs.unwatchFile;
   const originalReadFile = fs.promises.readFile;
   const watched = [];
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxmind-rs-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
   const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
   const dbPath = path.join(dir, 'GeoIP2-City-Test.mmdb');
   let activeReads = 0;
