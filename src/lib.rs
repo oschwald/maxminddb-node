@@ -6,7 +6,7 @@ use napi::{
         Array, Buffer, Either, Env, JsObjectValue, Null, Object, ObjectFinalize, ToNapiValue,
         Unknown,
     },
-    Error, Result, Status, UnknownRef,
+    check_status, sys, Error, JsValue, Result, Status, UnknownRef,
 };
 use napi_derive::napi;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
@@ -17,6 +17,7 @@ use std::{
     net::{IpAddr, Ipv4Addr},
     num::NonZeroUsize,
     path::Path,
+    ptr,
     str::FromStr,
 };
 
@@ -647,14 +648,66 @@ fn value_to_js<'env>(env: &'env Env, value: MmdbValue<'_>) -> Result<Unknown<'en
                 .collect::<Result<Vec<_>>>()?;
             Array::from_vec(env, js_values)?.into_unknown(env)
         }
-        MmdbValue::Object(values) => {
-            let mut object = Object::new(env)?;
-            for (key, value) in values {
-                object.set_named_property(&key, value_to_js(env, value)?)?;
-            }
-            object.into_unknown(env)
-        }
+        MmdbValue::Object(values) => object_entries_to_js(env, values),
     }
+}
+
+fn object_entries_to_js<'env>(
+    env: &'env Env,
+    values: Vec<(Cow<'_, str>, MmdbValue<'_>)>,
+) -> Result<Unknown<'env>> {
+    let raw_env = env.raw();
+    let mut object = ptr::null_mut();
+    check_status!(
+        unsafe { sys::napi_create_object(raw_env, &mut object) },
+        "Failed to create object",
+    )?;
+
+    let mut descriptors = Vec::with_capacity(values.len());
+    for (key, value) in values {
+        let key = key.as_ref();
+        let mut name = ptr::null_mut();
+        check_status!(
+            unsafe {
+                sys::napi_create_string_utf8(
+                    raw_env,
+                    key.as_ptr().cast(),
+                    key.len() as isize,
+                    &mut name,
+                )
+            },
+            "Failed to create property name",
+        )?;
+        let value = value_to_js(env, value)?;
+        descriptors.push(sys::napi_property_descriptor {
+            utf8name: ptr::null(),
+            name,
+            method: None,
+            getter: None,
+            setter: None,
+            value: value.raw(),
+            attributes: sys::PropertyAttributes::writable
+                | sys::PropertyAttributes::enumerable
+                | sys::PropertyAttributes::configurable,
+            data: ptr::null_mut(),
+        });
+    }
+
+    if !descriptors.is_empty() {
+        check_status!(
+            unsafe {
+                sys::napi_define_properties(
+                    raw_env,
+                    object,
+                    descriptors.len(),
+                    descriptors.as_ptr(),
+                )
+            },
+            "Failed to define properties",
+        )?;
+    }
+
+    Ok(unsafe { Unknown::from_raw_unchecked(raw_env, object) })
 }
 
 fn metadata_to_js<'env>(env: &'env Env, meta: &maxminddb::Metadata) -> Result<Object<'env>> {
