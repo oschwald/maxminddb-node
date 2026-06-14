@@ -199,6 +199,12 @@ export interface CacheStats {
   readonly evictions: number;
 }
 
+export declare class PathLookup<TValue = unknown> {
+  readonly path: ReadonlyArray<string | number>;
+  get(ipAddress: string): TValue | null;
+  getMany(ipAddresses: ReadonlyArray<string>): Array<TValue | null>;
+}
+
 export declare const MODE_AUTO: 'auto';
 export declare const MODE_MMAP: 'mmap';
 export declare const MODE_MEMORY: 'memory';
@@ -215,6 +221,9 @@ export declare class Reader<T extends Response = Response> {
   cacheStats(): CacheStats;
   get(ipAddress: string): T | null;
   getPath(ipAddress: string, path: ReadonlyArray<string | number>): unknown;
+  path<TValue = unknown>(
+    path: ReadonlyArray<string | number>,
+  ): PathLookup<TValue>;
   getWithPrefixLength(ipAddress: string): [T | null, number];
   getMany(ipAddresses: ReadonlyArray<string>): Array<T | null>;
   getManyPath(
@@ -241,6 +250,7 @@ export declare function validate(ipAddress: string): boolean;
 export declare function nativeVersion(): string;
 
 declare const maxmind: {
+  PathLookup: typeof PathLookup;
   Reader: typeof Reader;
   open: typeof open;
   openSync: typeof openSync;

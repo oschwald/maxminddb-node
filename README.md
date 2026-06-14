@@ -55,6 +55,10 @@ reader.getPath('8.8.8.8', ['country', 'iso_code']);
 reader.getMany(['8.8.8.8', '1.1.1.1']);
 reader.getManyPath(['8.8.8.8', '1.1.1.1'], ['country', 'iso_code']);
 
+const countryCode = reader.path(['country', 'iso_code']);
+countryCode.get('8.8.8.8');
+countryCode.getMany(['8.8.8.8', '1.1.1.1']);
+
 for (const [network, record] of reader.within('81.2.69.142/31')) {
   console.log(network, record);
 }

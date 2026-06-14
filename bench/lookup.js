@@ -175,6 +175,10 @@ async function benchDatabase(db, options, ips, nodeMaxmind) {
   benchLookup('getPath country.iso', cached, ips, options.warmup, (reader, ip) =>
     reader.getPath(ip, ['country', 'iso_code'])
   );
+  const countryIso = cached.path(['country', 'iso_code']);
+  benchLookup('path country.iso', countryIso, ips, options.warmup, (lookup, ip) =>
+    lookup.get(ip)
+  );
   benchMany('getMany default cache', cached, ips, options.warmup, (reader, values) =>
     reader.getMany(values)
   );

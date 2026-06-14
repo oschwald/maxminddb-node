@@ -190,6 +190,22 @@ async function readFile(filepath) {
     : readLargeFile(filepath, stat.size);
 }
 
+class PathLookup {
+  constructor(reader, path) {
+    this._reader = reader;
+    this._pathId = reader._reader.compilePath(path);
+    this.path = Object.freeze([...path]);
+  }
+
+  get(ipAddress) {
+    return this._reader._reader.getCompiledPath(ipAddress, this._pathId);
+  }
+
+  getMany(ipAddresses) {
+    return this._reader._reader.getManyCompiledPath(ipAddresses, this._pathId);
+  }
+}
+
 class Reader {
   constructor(database, options = {}) {
     if (!Buffer.isBuffer(database)) {
@@ -259,6 +275,10 @@ class Reader {
 
   getPath(ipAddress, path) {
     return this._reader.getPath(ipAddress, path);
+  }
+
+  path(path) {
+    return new PathLookup(this, path);
   }
 
   getWithPrefixLength(ipAddress) {
@@ -350,6 +370,7 @@ function validate(ipAddress) {
 
 module.exports = {
   ...native,
+  PathLookup,
   Reader,
   init,
   open,

@@ -601,6 +601,7 @@ impl<'de> DeserializeSeed<'de> for RawJsValueSeed {
 pub struct NativeReader {
     reader: Option<ReaderSource>,
     cache: RefCell<Option<RecordCache>>,
+    paths: RefCell<Vec<Vec<OwnedPathElement>>>,
     ip_version: u16,
 }
 
@@ -677,6 +678,40 @@ impl NativeReader {
         lookup_to_js(env, reader.lookup_path(ip, &path_elements))
     }
 
+    #[napi(js_name = "compilePath")]
+    pub fn compile_path(&self, path: Vec<Either<String, i64>>) -> Result<u32> {
+        let path = parse_path(path)?;
+        let mut paths = self
+            .paths
+            .try_borrow_mut()
+            .map_err(|_| napi_error("path cache already borrowed"))?;
+        let path_id =
+            u32::try_from(paths.len()).map_err(|_| napi_error("too many compiled paths"))?;
+        paths.push(path);
+        Ok(path_id)
+    }
+
+    #[napi(js_name = "getCompiledPath")]
+    pub fn get_compiled_path<'env>(
+        &self,
+        env: &'env Env,
+        ip_address: String,
+        path_id: u32,
+    ) -> Result<Unknown<'env>> {
+        let ip = self.parse_lookup_ip(&ip_address)?;
+        let paths = self
+            .paths
+            .try_borrow()
+            .map_err(|_| napi_error("path cache already borrowed"))?;
+        let owned_path = compiled_path(&paths, path_id)?;
+        let path_elements = path_elements_from_owned(owned_path);
+        let reader = self
+            .reader
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        lookup_to_js(env, reader.lookup_path(ip, &path_elements))
+    }
+
     #[napi(js_name = "getWithPrefixLength")]
     pub fn get_with_prefix_length<'env>(
         &self,
@@ -704,6 +739,31 @@ impl NativeReader {
         let values = parsed_ips
             .into_iter()
             .map(|ip| reader.lookup_record_to_js(env, ip, &self.cache))
+            .collect::<Result<Vec<_>>>()?;
+        Array::from_vec(env, values)?.into_unknown(env)
+    }
+
+    #[napi(js_name = "getManyCompiledPath")]
+    pub fn get_many_compiled_path<'env>(
+        &self,
+        env: &'env Env,
+        ips: Vec<String>,
+        path_id: u32,
+    ) -> Result<Unknown<'env>> {
+        let parsed_ips = self.parse_lookup_ips(ips)?;
+        let paths = self
+            .paths
+            .try_borrow()
+            .map_err(|_| napi_error("path cache already borrowed"))?;
+        let owned_path = compiled_path(&paths, path_id)?;
+        let path_elements = path_elements_from_owned(owned_path);
+        let reader = self
+            .reader
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        let values = parsed_ips
+            .into_iter()
+            .map(|ip| lookup_to_js(env, reader.lookup_path(ip, &path_elements)))
             .collect::<Result<Vec<_>>>()?;
         Array::from_vec(env, values)?.into_unknown(env)
     }
@@ -865,6 +925,7 @@ fn create_reader(source: ReaderSource, cache_capacity: Option<u32>) -> NativeRea
     NativeReader {
         reader: Some(source),
         cache: RefCell::new(cache),
+        paths: RefCell::new(Vec::new()),
         ip_version,
     }
 }
@@ -1317,6 +1378,13 @@ fn path_elements_from_owned(path: &[OwnedPathElement]) -> Vec<maxminddb::PathEle
             OwnedPathElement::IndexFromEnd(index) => maxminddb::PathElement::IndexFromEnd(*index),
         })
         .collect()
+}
+
+fn compiled_path(paths: &[Vec<OwnedPathElement>], path_id: u32) -> Result<&[OwnedPathElement]> {
+    paths
+        .get(path_id as usize)
+        .map(Vec::as_slice)
+        .ok_or_else(|| invalid_arg(format!("Invalid compiled path id: {path_id}")))
 }
 
 fn collect_networks_for_reader<'de, S: AsRef<[u8]>>(

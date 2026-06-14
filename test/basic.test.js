@@ -131,6 +131,21 @@ test('looks up selected paths', async () => {
   assert.equal(reader.getPath('1.1.1.1', ['country', 'iso_code']), null);
 });
 
+test('reuses compiled paths', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const country = reader.path(['country', 'iso_code']);
+
+  assert(country instanceof maxmind.PathLookup);
+  assert(Object.isFrozen(country.path));
+  assert.deepEqual(country.path, ['country', 'iso_code']);
+  assert.equal(country.get('175.16.199.1'), 'CN');
+  assert.equal(country.get('1.1.1.1'), null);
+  assert.deepEqual(
+    country.getMany(['1.1.1.1', '175.16.199.1', '81.2.69.142']),
+    [null, 'CN', 'GB']
+  );
+});
+
 test('looks up batches', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
   const ips = ['1.1.1.1', '175.16.199.1', '81.2.69.142'];

@@ -1,6 +1,7 @@
 import maxmind, {
   CityResponse,
   MODE_MMAP,
+  PathLookup,
   Reader,
   validate,
 } from '..';
@@ -23,6 +24,9 @@ async function checkTypes() {
   void prefixLength;
 
   opened.getPath('8.8.8.8', ['subdivisions', 0, 'iso_code']);
+  const countryPath: PathLookup<string> = opened.path<string>(['country', 'iso_code']);
+  const countryCode: string | null = countryPath.get('8.8.8.8');
+  void countryCode;
   opened.getMany(['8.8.8.8']);
   opened.getManyPath(['8.8.8.8'], ['country', 'iso_code']);
   opened.within('8.8.8.0/24');
