@@ -48,6 +48,15 @@ data offset. The default is 10,000 records, matching `node-maxmind`. Pass
 Use `reader.cacheStats()` to inspect hit/miss counters and `reader.clearCache()`
 to release cached record references.
 
+The record cache stores JavaScript objects, not compressed database bytes. Large
+cache sizes can therefore retain significant heap memory when the database
+records are large or lookups touch many distinct data offsets. Cached records
+are returned by reference, so mutating a cached record can affect later lookups
+for the same data offset until that entry is evicted, `reader.clearCache()` is
+called, or the reader is closed. `getPath()`, `getManyPath()`, and compiled
+`reader.path()` lookups decode only the requested path and do not populate the
+full-record cache.
+
 ## Extensions
 
 ```js
