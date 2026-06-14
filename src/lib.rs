@@ -1127,19 +1127,37 @@ fn raw_f64(env: sys::napi_env, float_value: f64) -> Result<RawJsValue> {
 }
 
 fn raw_string(env: sys::napi_env, string_value: &str) -> Result<RawJsValue> {
+    raw_js_string(env, string_value).map(RawJsValue)
+}
+
+fn raw_js_string(env: sys::napi_env, string_value: &str) -> Result<sys::napi_value> {
     let mut value = ptr::null_mut();
-    check_status!(
-        unsafe {
-            sys::napi_create_string_utf8(
-                env,
-                string_value.as_ptr().cast(),
-                string_value.len() as isize,
-                &mut value,
-            )
-        },
-        "Failed to create string",
-    )?;
-    Ok(RawJsValue(value))
+    if string_value.is_ascii() {
+        check_status!(
+            unsafe {
+                sys::napi_create_string_latin1(
+                    env,
+                    string_value.as_ptr().cast(),
+                    string_value.len() as isize,
+                    &mut value,
+                )
+            },
+            "Failed to create string",
+        )?;
+    } else {
+        check_status!(
+            unsafe {
+                sys::napi_create_string_utf8(
+                    env,
+                    string_value.as_ptr().cast(),
+                    string_value.len() as isize,
+                    &mut value,
+                )
+            },
+            "Failed to create string",
+        )?;
+    }
+    Ok(value)
 }
 
 fn raw_buffer(env: sys::napi_env, bytes: &[u8]) -> Result<RawJsValue> {
@@ -1190,18 +1208,7 @@ fn raw_object_entries(
     let mut descriptors = Vec::with_capacity(values.len());
     for (key, value) in values {
         let key = key.as_ref();
-        let mut name = ptr::null_mut();
-        check_status!(
-            unsafe {
-                sys::napi_create_string_utf8(
-                    env,
-                    key.as_ptr().cast(),
-                    key.len() as isize,
-                    &mut name,
-                )
-            },
-            "Failed to create property name",
-        )?;
+        let name = raw_js_string(env, key)?;
         descriptors.push(sys::napi_property_descriptor {
             utf8name: ptr::null(),
             name,
@@ -1268,18 +1275,7 @@ fn object_entries_to_js<'env>(
     let mut descriptors = Vec::with_capacity(values.len());
     for (key, value) in values {
         let key = key.as_ref();
-        let mut name = ptr::null_mut();
-        check_status!(
-            unsafe {
-                sys::napi_create_string_utf8(
-                    raw_env,
-                    key.as_ptr().cast(),
-                    key.len() as isize,
-                    &mut name,
-                )
-            },
-            "Failed to create property name",
-        )?;
+        let name = raw_js_string(raw_env, key)?;
         let value = value_to_js(env, value)?;
         descriptors.push(sys::napi_property_descriptor {
             utf8name: ptr::null(),
