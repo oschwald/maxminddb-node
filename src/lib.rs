@@ -13,6 +13,8 @@ use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, Seq
 use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
+    collections::HashMap,
+    ffi::{c_char, CString},
     fmt,
     net::{IpAddr, Ipv4Addr},
     num::NonZeroUsize,
@@ -28,6 +30,7 @@ const ERR_BAD_DATA: &str =
 thread_local! {
     static JS_DECODE_ENV: Cell<sys::napi_env> = Cell::new(ptr::null_mut());
     static JS_DECODE_NAPI_ERROR: RefCell<Option<Error>> = const { RefCell::new(None) };
+    static JS_PROPERTY_NAME_CACHE: Cell<*const RefCell<PropertyNameCache>> = Cell::new(ptr::null());
 }
 
 enum ReaderSource {
@@ -41,15 +44,16 @@ impl ReaderSource {
         env: &'env Env,
         ip: IpAddr,
         cache: &RefCell<Option<RecordCache>>,
+        property_names: &RefCell<PropertyNameCache>,
     ) -> Result<Unknown<'env>> {
         match self {
             ReaderSource::Mmap(reader) => {
                 let result = reader.lookup(ip).map_err(lookup_error)?;
-                lookup_result_record_to_js(env, &result, cache)
+                lookup_result_record_to_js(env, &result, cache, property_names)
             }
             ReaderSource::Memory(reader) => {
                 let result = reader.lookup(ip).map_err(lookup_error)?;
-                lookup_result_record_to_js(env, &result, cache)
+                lookup_result_record_to_js(env, &result, cache, property_names)
             }
         }
     }
@@ -59,19 +63,26 @@ impl ReaderSource {
         env: &'env Env,
         ip: IpAddr,
         cache: &RefCell<Option<RecordCache>>,
+        property_names: &RefCell<PropertyNameCache>,
     ) -> Result<(Unknown<'env>, usize)> {
         match self {
             ReaderSource::Mmap(reader) => {
                 let result = reader.lookup(ip).map_err(lookup_error)?;
                 let network = result.network().map_err(lookup_error)?;
                 let prefix = prefix_len_for_lookup(ip, network);
-                Ok((lookup_result_record_to_js(env, &result, cache)?, prefix))
+                Ok((
+                    lookup_result_record_to_js(env, &result, cache, property_names)?,
+                    prefix,
+                ))
             }
             ReaderSource::Memory(reader) => {
                 let result = reader.lookup(ip).map_err(lookup_error)?;
                 let network = result.network().map_err(lookup_error)?;
                 let prefix = prefix_len_for_lookup(ip, network);
-                Ok((lookup_result_record_to_js(env, &result, cache)?, prefix))
+                Ok((
+                    lookup_result_record_to_js(env, &result, cache, property_names)?,
+                    prefix,
+                ))
             }
         }
     }
@@ -166,15 +177,19 @@ impl RawJsValue {
 struct JsDecodeEnvGuard {
     previous_env: sys::napi_env,
     previous_error: Option<Error>,
+    previous_property_name_cache: *const RefCell<PropertyNameCache>,
 }
 
 impl JsDecodeEnvGuard {
-    fn enter(env: sys::napi_env) -> Self {
+    fn enter(env: sys::napi_env, property_name_cache: &RefCell<PropertyNameCache>) -> Self {
         let previous_env = JS_DECODE_ENV.with(|cell| cell.replace(env));
         let previous_error = JS_DECODE_NAPI_ERROR.with(|cell| cell.replace(None));
+        let previous_property_name_cache =
+            JS_PROPERTY_NAME_CACHE.with(|cell| cell.replace(property_name_cache));
         Self {
             previous_env,
             previous_error,
+            previous_property_name_cache,
         }
     }
 }
@@ -185,6 +200,7 @@ impl Drop for JsDecodeEnvGuard {
         JS_DECODE_NAPI_ERROR.with(|cell| {
             cell.replace(self.previous_error.take());
         });
+        JS_PROPERTY_NAME_CACHE.with(|cell| cell.set(self.previous_property_name_cache));
     }
 }
 
@@ -194,6 +210,33 @@ struct RecordCache {
     misses: u64,
     inserts: u64,
     evictions: u64,
+}
+
+struct PropertyNameCache {
+    values: HashMap<String, CString>,
+}
+
+impl PropertyNameCache {
+    fn new() -> Self {
+        Self {
+            values: HashMap::new(),
+        }
+    }
+
+    fn get(&mut self, name: &str) -> Option<*const c_char> {
+        if let Some(reference) = self.values.get(name) {
+            return Some(reference.as_ptr());
+        }
+
+        let reference = CString::new(name).ok()?;
+        let pointer = reference.as_ptr();
+        self.values.insert(name.to_owned(), reference);
+        Some(pointer)
+    }
+
+    fn clear(&mut self) {
+        self.values.clear();
+    }
 }
 
 impl RecordCache {
@@ -601,6 +644,7 @@ impl<'de> DeserializeSeed<'de> for RawJsValueSeed {
 pub struct NativeReader {
     reader: Option<ReaderSource>,
     cache: RefCell<Option<RecordCache>>,
+    property_names: RefCell<PropertyNameCache>,
     paths: RefCell<Vec<Vec<OwnedPathElement>>>,
     ip_version: u16,
 }
@@ -637,6 +681,7 @@ impl NativeReader {
     #[napi]
     pub fn close(&mut self, env: &Env) -> Result<()> {
         self.clear_record_cache(env)?;
+        self.clear_property_names(env)?;
         self.reader = None;
         Ok(())
     }
@@ -658,7 +703,7 @@ impl NativeReader {
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        reader.lookup_record_to_js(env, ip, &self.cache)
+        reader.lookup_record_to_js(env, ip, &self.cache, &self.property_names)
     }
 
     #[napi(js_name = "getPath")]
@@ -724,7 +769,7 @@ impl NativeReader {
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         let (js_value, prefix_len) =
-            reader.lookup_record_with_prefix_to_js(env, ip, &self.cache)?;
+            reader.lookup_record_with_prefix_to_js(env, ip, &self.cache, &self.property_names)?;
         let js_prefix = (prefix_len as u32).into_unknown(env)?;
         Array::from_vec(env, vec![js_value, js_prefix])?.into_unknown(env)
     }
@@ -738,7 +783,7 @@ impl NativeReader {
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         let values = parsed_ips
             .into_iter()
-            .map(|ip| reader.lookup_record_to_js(env, ip, &self.cache))
+            .map(|ip| reader.lookup_record_to_js(env, ip, &self.cache, &self.property_names))
             .collect::<Result<Vec<_>>>()?;
         Array::from_vec(env, values)?.into_unknown(env)
     }
@@ -895,11 +940,21 @@ impl NativeReader {
         }
         Ok(())
     }
+
+    fn clear_property_names(&self, env: &Env) -> Result<()> {
+        let _ = env;
+        self.property_names
+            .try_borrow_mut()
+            .map_err(|_| napi_error("property name cache already borrowed"))?
+            .clear();
+        Ok(())
+    }
 }
 
 impl ObjectFinalize for NativeReader {
     fn finalize(self, env: Env) -> Result<()> {
-        self.clear_record_cache(&env)
+        self.clear_record_cache(&env)?;
+        self.clear_property_names(&env)
     }
 }
 
@@ -925,6 +980,7 @@ fn create_reader(source: ReaderSource, cache_capacity: Option<u32>) -> NativeRea
     NativeReader {
         reader: Some(source),
         cache: RefCell::new(cache),
+        property_names: RefCell::new(PropertyNameCache::new()),
         paths: RefCell::new(Vec::new()),
         ip_version,
     }
@@ -990,6 +1046,7 @@ fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
     cache: &RefCell<Option<RecordCache>>,
+    property_names: &RefCell<PropertyNameCache>,
 ) -> Result<Unknown<'env>> {
     let Some(offset) = result.offset() else {
         return Null.into_unknown(env);
@@ -1000,7 +1057,7 @@ fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
             .try_borrow_mut()
             .map_err(|_| napi_error("cache already borrowed"))?;
         let Some(record_cache) = cache_guard.as_mut() else {
-            return lookup_result_record_uncached_to_js(env, result);
+            return lookup_result_record_uncached_to_js(env, result, property_names);
         };
 
         if let Some(value) = record_cache.get(env, offset)? {
@@ -1008,7 +1065,7 @@ fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
         }
     }
 
-    let value = lookup_result_record_uncached_to_js(env, result)?;
+    let value = lookup_result_record_uncached_to_js(env, result, property_names)?;
     if let Some(record_cache) = cache
         .try_borrow_mut()
         .map_err(|_| napi_error("cache already borrowed"))?
@@ -1022,8 +1079,9 @@ fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
 fn lookup_result_record_uncached_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
+    property_names: &RefCell<PropertyNameCache>,
 ) -> Result<Unknown<'env>> {
-    let _guard = JsDecodeEnvGuard::enter(env.raw());
+    let _guard = JsDecodeEnvGuard::enter(env.raw(), property_names);
     match result.decode::<RawJsValue>() {
         Ok(Some(value)) => Ok(value.into_unknown(env)),
         Ok(None) => Null.into_unknown(env),
@@ -1160,6 +1218,26 @@ fn raw_js_string(env: sys::napi_env, string_value: &str) -> Result<sys::napi_val
     Ok(value)
 }
 
+fn raw_property_descriptor_name(
+    env: sys::napi_env,
+    property_name: &str,
+) -> Result<(*const c_char, sys::napi_value)> {
+    let cache = JS_PROPERTY_NAME_CACHE.with(Cell::get);
+    if cache.is_null() {
+        return raw_js_string(env, property_name).map(|name| (ptr::null(), name));
+    }
+
+    if let Some(utf8name) = unsafe { &*cache }
+        .try_borrow_mut()
+        .map_err(|_| napi_error("property name cache already borrowed"))?
+        .get(property_name)
+    {
+        return Ok((utf8name, ptr::null_mut()));
+    }
+
+    raw_js_string(env, property_name).map(|name| (ptr::null(), name))
+}
+
 fn raw_buffer(env: sys::napi_env, bytes: &[u8]) -> Result<RawJsValue> {
     let mut value = ptr::null_mut();
     let data = if bytes.is_empty() {
@@ -1208,9 +1286,9 @@ fn raw_object_entries(
     let mut descriptors = Vec::with_capacity(values.len());
     for (key, value) in values {
         let key = key.as_ref();
-        let name = raw_js_string(env, key)?;
+        let (utf8name, name) = raw_property_descriptor_name(env, key)?;
         descriptors.push(sys::napi_property_descriptor {
-            utf8name: ptr::null(),
+            utf8name,
             name,
             method: None,
             getter: None,
