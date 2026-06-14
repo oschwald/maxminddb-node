@@ -12,7 +12,8 @@
   "scripts": {
     "build": "napi build --platform --release --no-js --dts native.d.ts",
     "build:debug": "napi build --platform --no-js --dts native.d.ts",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "maxmind",
@@ -23,6 +24,7 @@
   "license": "ISC",
   "devDependencies": {
     "@napi-rs/cli": "^3.7.2",
+    "@types/node": "^25.9.3",
     "typescript": "^5.9.2"
   },
   "engines": {

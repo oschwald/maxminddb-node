@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const maxmind = require('..');
@@ -88,4 +89,29 @@ test('iterates networks within a CIDR', async () => {
     '81.2.69.142/31',
     reader.get('81.2.69.142'),
   ]);
+});
+
+test('closes reader', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+
+  assert.equal(reader.closed, false);
+  reader.close();
+  assert.equal(reader.closed, true);
+  assert.throws(() => reader.get('81.2.69.142'), /closed MaxMind DB/);
+});
+
+test('keeps legacy API errors', () => {
+  assert.throws(() => maxmind.init(), /Maxmind v2 module has changed API/);
+  assert.throws(() => maxmind.openSync(), /Maxmind v2 module has changed API/);
+});
+
+test('rejects gzip files in open', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxmind-rs-'));
+  const gzipPath = path.join(dir, 'db.mmdb.gz');
+  fs.writeFileSync(gzipPath, Buffer.from([0x1f, 0x8b, 0x08, 0x00]));
+
+  await assert.rejects(
+    () => maxmind.open(gzipPath),
+    /passing in a file in gzip format/
+  );
 });
