@@ -184,6 +184,10 @@ export interface NetworkPageOptions extends NetworkIterationOptions {
   offset?: number;
 }
 
+export interface NetworkPagesOptions extends NetworkPageOptions {
+  pageSize?: number;
+}
+
 export interface NetworkPage<T extends Response = Response> {
   records: Array<[string, T | null]>;
   nextOffset: number | null;
@@ -237,6 +241,11 @@ export declare class Reader<T extends Response = Response> {
   ): Array<[string, T | null]>;
   networksPage(options?: NetworkPageOptions): NetworkPage<T>;
   withinPage(cidr: string, options?: NetworkPageOptions): NetworkPage<T>;
+  networkPages(options?: NetworkPagesOptions): IterableIterator<NetworkPage<T>>;
+  withinPages(
+    cidr: string,
+    options?: NetworkPagesOptions,
+  ): IterableIterator<NetworkPage<T>>;
 }
 
 export declare function open<T extends Response = Response>(

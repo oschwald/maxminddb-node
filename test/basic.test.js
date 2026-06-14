@@ -194,6 +194,22 @@ test('paginates networks within a CIDR', async () => {
   );
 });
 
+test('generates network pages within a CIDR', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const records = reader.within('81.2.69.0/24');
+  const pages = [...reader.withinPages('81.2.69.0/24', { pageSize: 1 })];
+
+  assert.equal(pages.length, records.length);
+  assert.deepEqual(
+    pages.flatMap((page) => page.records),
+    records
+  );
+  assert.equal(pages.at(-1).nextOffset, null);
+
+  const firstNetworkPage = reader.networkPages({ limit: 1 }).next().value;
+  assert.equal(firstNetworkPage.records.length, 1);
+});
+
 test('closes reader', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
 

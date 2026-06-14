@@ -139,6 +139,14 @@ function normalizeNetworkPageOptions(options = {}) {
   return [...normalizeNetworkOptions(options), limit, offset];
 }
 
+function normalizeNetworkPageGeneratorOptions(options = {}) {
+  return {
+    ...options,
+    limit: options.pageSize ?? options.limit ?? 1000,
+    offset: options.offset ?? 0,
+  };
+}
+
 function waitForFile(filepath) {
   for (let i = 0; i < 3; i++) {
     if (fs.existsSync(filepath)) {
@@ -307,6 +315,30 @@ class Reader {
 
   withinPage(cidr, options = {}) {
     return this._reader.networksPage(cidr, ...normalizeNetworkPageOptions(options));
+  }
+
+  *networkPages(options = {}) {
+    let pageOptions = normalizeNetworkPageGeneratorOptions(options);
+    while (true) {
+      const page = this.networksPage(pageOptions);
+      yield page;
+      if (page.nextOffset === null) {
+        return;
+      }
+      pageOptions = { ...pageOptions, offset: page.nextOffset };
+    }
+  }
+
+  *withinPages(cidr, options = {}) {
+    let pageOptions = normalizeNetworkPageGeneratorOptions(options);
+    while (true) {
+      const page = this.withinPage(cidr, pageOptions);
+      yield page;
+      if (page.nextOffset === null) {
+        return;
+      }
+      pageOptions = { ...pageOptions, offset: page.nextOffset };
+    }
   }
 }
 

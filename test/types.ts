@@ -39,6 +39,10 @@ async function checkTypes() {
   const nextOffset: number | null = page.nextOffset;
   page.records[0]?.[1]?.country?.iso_code;
   void nextOffset;
+  for (const generatedPage of opened.withinPages('8.8.8.0/24', { pageSize: 100 })) {
+    generatedPage.records[0]?.[1]?.country?.iso_code;
+  }
+  opened.networkPages({ limit: 100 }).next();
 
   const fromBuffer = new Reader<CityResponse>(Buffer.alloc(0));
   fromBuffer.close();

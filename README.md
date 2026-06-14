@@ -63,12 +63,10 @@ for (const [network, record] of reader.within('81.2.69.142/31')) {
   console.log(network, record);
 }
 
-let page = reader.withinPage('81.2.69.0/24', { limit: 100 });
-while (page.nextOffset !== null) {
-  page = reader.withinPage('81.2.69.0/24', {
-    limit: 100,
-    offset: page.nextOffset,
-  });
+for (const page of reader.withinPages('81.2.69.0/24', { pageSize: 100 })) {
+  for (const [network, record] of page.records) {
+    console.log(network, record);
+  }
 }
 ```
 
@@ -79,8 +77,9 @@ For high-volume lookup workloads, prefer `getMany()` or `getManyPath()` when
 you can batch IPs. They cross the native boundary once for the whole batch and
 are significantly faster than calling `get()` in a JavaScript loop.
 
-For large network walks, prefer `networksPage()` or `withinPage()` over
-materializing the full `networks()`/`within()` result at once.
+For large network walks, prefer `networkPages()`, `withinPages()`,
+`networksPage()`, or `withinPage()` over materializing the full
+`networks()`/`within()` result at once.
 
 ## Open Modes
 
