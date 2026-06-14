@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - 18.x
+          - 20.x
+          - 22.x
+
+    defaults:
+      run:
+        working-directory: maxmind-rs
+
+    steps:
+      - name: Checkout maxmind-rs
+        uses: actions/checkout@v4
+        with:
+          path: maxmind-rs
+
+      - name: Checkout MaxMind DB Rust test data
+        uses: actions/checkout@v4
+        with:
+          repository: oschwald/maxminddb-rust
+          path: maxminddb-rust
+          submodules: recursive
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: maxmind-rs/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check Rust formatting
+        run: cargo fmt -- --check
+
+      - name: Check Rust
+        run: cargo check
+
+      - name: Build native module
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Check npm package
+        run: npm pack --dry-run
