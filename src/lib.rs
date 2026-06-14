@@ -576,20 +576,27 @@ fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
         return Null.into_unknown(env);
     };
 
-    let mut cache_guard = cache
-        .try_borrow_mut()
-        .map_err(|_| napi_error("cache already borrowed"))?;
-    let Some(cache) = cache_guard.as_mut() else {
-        drop(cache_guard);
-        return lookup_result_record_uncached_to_js(env, result);
-    };
+    {
+        let mut cache_guard = cache
+            .try_borrow_mut()
+            .map_err(|_| napi_error("cache already borrowed"))?;
+        let Some(record_cache) = cache_guard.as_mut() else {
+            return lookup_result_record_uncached_to_js(env, result);
+        };
 
-    if let Some(value) = cache.get(env, offset)? {
-        return Ok(value);
+        if let Some(value) = record_cache.get(env, offset)? {
+            return Ok(value);
+        }
     }
 
     let value = lookup_result_record_uncached_to_js(env, result)?;
-    cache.put(env, offset, &value)?;
+    if let Some(record_cache) = cache
+        .try_borrow_mut()
+        .map_err(|_| napi_error("cache already borrowed"))?
+        .as_mut()
+    {
+        record_cache.put(env, offset, &value)?;
+    }
     Ok(value)
 }
 
