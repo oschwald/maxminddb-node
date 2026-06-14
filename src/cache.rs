@@ -2,7 +2,7 @@ use crate::errors::napi_error;
 use lru::LruCache;
 use napi::{
     bindgen_prelude::{Env, JsObjectValue, Object, Unknown},
-    Result, UnknownRef,
+    Result, UnknownRef, ValueType,
 };
 use std::{
     cell::RefCell,
@@ -72,6 +72,10 @@ impl RecordCache {
     }
 
     pub(crate) fn put(&mut self, env: &Env, offset: usize, value: &Unknown<'_>) -> Result<()> {
+        if value.get_type()? != ValueType::Object {
+            return Ok(());
+        }
+
         let reference = value.create_ref()?;
         self.inserts += 1;
         if let Some((old_offset, old_reference)) = self.values.push(offset, reference) {
