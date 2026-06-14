@@ -14,6 +14,9 @@ async function checkTypes() {
 
   const city = opened.get('8.8.8.8');
   city?.country?.iso_code;
+  const cacheHits: number = opened.cacheStats().hits;
+  opened.clearCache();
+  void cacheHits;
 
   const tuple = opened.getWithPrefixLength('8.8.8.8');
   const prefixLength: number = tuple[1];

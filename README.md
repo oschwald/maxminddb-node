@@ -45,6 +45,8 @@ console.log(reader.getPath('8.8.8.8', ['country', 'iso_code']));
 `cache` controls a native LRU cache of materialized records keyed by MaxMind DB
 data offset. The default is 10,000 records, matching `node-maxmind`. Pass
 `cache: { max: 1000 }` to tune the cache size or `cache: false` to disable it.
+Use `reader.cacheStats()` to inspect hit/miss counters and `reader.clearCache()`
+to release cached record references.
 
 ## Extensions
 

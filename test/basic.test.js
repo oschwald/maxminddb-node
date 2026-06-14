@@ -42,13 +42,55 @@ test('constructs reader from buffer', () => {
 test('caches materialized records by data offset', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
 
+  assert.deepEqual(reader.cacheStats(), {
+    enabled: true,
+    size: 0,
+    capacity: 10000,
+    hits: 0,
+    misses: 0,
+    inserts: 0,
+    evictions: 0,
+  });
+
   const first = reader.get('175.16.199.1');
   assert.strictEqual(reader.get('175.16.199.1'), first);
   assert.strictEqual(reader.getWithPrefixLength('175.16.199.1')[0], first);
+  assert.deepEqual(reader.cacheStats(), {
+    enabled: true,
+    size: 1,
+    capacity: 10000,
+    hits: 2,
+    misses: 1,
+    inserts: 1,
+    evictions: 0,
+  });
+
+  reader.clearCache();
+  assert.equal(reader.cacheStats().size, 0);
+  assert.notStrictEqual(reader.get('175.16.199.1'), first);
+  assert.deepEqual(reader.cacheStats(), {
+    enabled: true,
+    size: 1,
+    capacity: 10000,
+    hits: 2,
+    misses: 2,
+    inserts: 2,
+    evictions: 0,
+  });
 
   const uncached = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'), {
     cache: false,
   });
+  assert.deepEqual(uncached.cacheStats(), {
+    enabled: false,
+    size: 0,
+    capacity: 0,
+    hits: 0,
+    misses: 0,
+    inserts: 0,
+    evictions: 0,
+  });
+  uncached.clearCache();
   assert.notStrictEqual(
     uncached.get('175.16.199.1'),
     uncached.get('175.16.199.1')

@@ -245,6 +245,14 @@ class Reader {
     this._reader.close();
   }
 
+  clearCache() {
+    this._reader.clearCache();
+  }
+
+  cacheStats() {
+    return this._reader.cacheStats();
+  }
+
   get(ipAddress) {
     return this._reader.get(ipAddress);
   }

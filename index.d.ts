@@ -189,6 +189,16 @@ export interface NetworkPage<T extends Response = Response> {
   nextOffset: number | null;
 }
 
+export interface CacheStats {
+  readonly enabled: boolean;
+  readonly size: number;
+  readonly capacity: number;
+  readonly hits: number;
+  readonly misses: number;
+  readonly inserts: number;
+  readonly evictions: number;
+}
+
 export declare const MODE_AUTO: 'auto';
 export declare const MODE_MMAP: 'mmap';
 export declare const MODE_MEMORY: 'memory';
@@ -201,6 +211,8 @@ export declare class Reader<T extends Response = Response> {
   load(database: Buffer): void;
   reload(): void;
   close(): void;
+  clearCache(): void;
+  cacheStats(): CacheStats;
   get(ipAddress: string): T | null;
   getPath(ipAddress: string, path: ReadonlyArray<string | number>): unknown;
   getWithPrefixLength(ipAddress: string): [T | null, number];

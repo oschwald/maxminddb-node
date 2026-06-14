@@ -190,25 +190,40 @@ impl Drop for JsDecodeEnvGuard {
 
 struct RecordCache {
     values: LruCache<usize, UnknownRef>,
+    hits: u64,
+    misses: u64,
+    inserts: u64,
+    evictions: u64,
 }
 
 impl RecordCache {
     fn new(capacity: NonZeroUsize) -> Self {
         Self {
             values: LruCache::new(capacity),
+            hits: 0,
+            misses: 0,
+            inserts: 0,
+            evictions: 0,
         }
     }
 
     fn get<'env>(&mut self, env: &'env Env, offset: usize) -> Result<Option<Unknown<'env>>> {
-        self.values
-            .get(&offset)
-            .map(|value| value.get_value(env))
-            .transpose()
+        let Some(value) = self.values.get(&offset) else {
+            self.misses += 1;
+            return Ok(None);
+        };
+
+        self.hits += 1;
+        value.get_value(env).map(Some)
     }
 
     fn put(&mut self, env: &Env, offset: usize, value: &Unknown<'_>) -> Result<()> {
         let reference = value.create_ref()?;
-        if let Some((_old_offset, old_reference)) = self.values.push(offset, reference) {
+        self.inserts += 1;
+        if let Some((old_offset, old_reference)) = self.values.push(offset, reference) {
+            if old_offset != offset {
+                self.evictions += 1;
+            }
             old_reference.unref(env)?;
         }
         Ok(())
@@ -620,9 +635,19 @@ impl NativeReader {
 
     #[napi]
     pub fn close(&mut self, env: &Env) -> Result<()> {
-        self.clear_cache(env)?;
+        self.clear_record_cache(env)?;
         self.reader = None;
         Ok(())
+    }
+
+    #[napi(js_name = "clearCache")]
+    pub fn clear_cache(&self, env: &Env) -> Result<()> {
+        self.clear_record_cache(env)
+    }
+
+    #[napi(js_name = "cacheStats")]
+    pub fn cache_stats<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
+        cache_stats_to_js(env, &self.cache)
     }
 
     #[napi]
@@ -793,13 +818,13 @@ impl NativeReader {
     }
 
     fn replace_reader(&mut self, env: &Env, new_reader: ReaderSource) -> Result<()> {
-        self.clear_cache(env)?;
+        self.clear_record_cache(env)?;
         self.ip_version = new_reader.metadata().ip_version;
         self.reader = Some(new_reader);
         Ok(())
     }
 
-    fn clear_cache(&self, env: &Env) -> Result<()> {
+    fn clear_record_cache(&self, env: &Env) -> Result<()> {
         if let Some(cache) = self
             .cache
             .try_borrow_mut()
@@ -814,7 +839,7 @@ impl NativeReader {
 
 impl ObjectFinalize for NativeReader {
     fn finalize(self, env: Env) -> Result<()> {
-        self.clear_cache(&env)
+        self.clear_record_cache(&env)
     }
 }
 
@@ -868,6 +893,36 @@ fn lookup_to_js<'env>(
         Some(value) => value_to_js(env, value),
         None => Null.into_unknown(env),
     }
+}
+
+fn cache_stats_to_js<'env>(
+    env: &'env Env,
+    cache: &RefCell<Option<RecordCache>>,
+) -> Result<Object<'env>> {
+    let cache = cache
+        .try_borrow()
+        .map_err(|_| napi_error("cache already borrowed"))?;
+    let mut object = Object::new(env)?;
+
+    if let Some(cache) = cache.as_ref() {
+        object.set_named_property("enabled", true)?;
+        object.set_named_property("size", cache.values.len() as f64)?;
+        object.set_named_property("capacity", cache.values.cap().get() as f64)?;
+        object.set_named_property("hits", cache.hits as f64)?;
+        object.set_named_property("misses", cache.misses as f64)?;
+        object.set_named_property("inserts", cache.inserts as f64)?;
+        object.set_named_property("evictions", cache.evictions as f64)?;
+    } else {
+        object.set_named_property("enabled", false)?;
+        object.set_named_property("size", 0_f64)?;
+        object.set_named_property("capacity", 0_f64)?;
+        object.set_named_property("hits", 0_f64)?;
+        object.set_named_property("misses", 0_f64)?;
+        object.set_named_property("inserts", 0_f64)?;
+        object.set_named_property("evictions", 0_f64)?;
+    }
+
+    Ok(object)
 }
 
 fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
