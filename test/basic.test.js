@@ -48,3 +48,33 @@ test('returns prefix length', async () => {
     31,
   ]);
 });
+
+test('looks up selected paths', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+
+  assert.equal(reader.getPath('175.16.199.1', ['country', 'iso_code']), 'CN');
+  assert.equal(
+    reader.getPath('81.2.69.142', ['subdivisions', 0, 'iso_code']),
+    'ENG'
+  );
+  assert.equal(
+    reader.getPath('81.2.69.142', ['subdivisions', -1, 'iso_code']),
+    'ENG'
+  );
+  assert.equal(reader.getPath('1.1.1.1', ['country', 'iso_code']), null);
+});
+
+test('looks up batches', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const ips = ['1.1.1.1', '175.16.199.1', '81.2.69.142'];
+
+  assert.deepEqual(
+    reader.getMany(ips).map((record) => record?.country?.iso_code ?? null),
+    [null, 'CN', 'GB']
+  );
+  assert.deepEqual(reader.getManyPath(ips, ['country', 'iso_code']), [
+    null,
+    'CN',
+    'GB',
+  ]);
+});

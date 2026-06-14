@@ -204,8 +204,20 @@ class Reader {
     return this._reader.get(ipAddress);
   }
 
+  getPath(ipAddress, path) {
+    return this._reader.getPath(ipAddress, path);
+  }
+
   getWithPrefixLength(ipAddress) {
     return this._reader.getWithPrefixLength(ipAddress);
+  }
+
+  getMany(ipAddresses) {
+    return this._reader.getMany(ipAddresses);
+  }
+
+  getManyPath(ipAddresses, path) {
+    return this._reader.getManyPath(ipAddresses, path);
   }
 }
 

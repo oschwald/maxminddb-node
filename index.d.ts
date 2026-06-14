@@ -186,7 +186,13 @@ export declare class Reader<T extends Response = Response> {
   reload(): void;
   close(): void;
   get(ipAddress: string): T | null;
+  getPath(ipAddress: string, path: ReadonlyArray<string | number>): unknown;
   getWithPrefixLength(ipAddress: string): [T | null, number];
+  getMany(ipAddresses: ReadonlyArray<string>): Array<T | null>;
+  getManyPath(
+    ipAddresses: ReadonlyArray<string>,
+    path: ReadonlyArray<string | number>,
+  ): unknown[];
 }
 
 export declare function open<T extends Response = Response>(

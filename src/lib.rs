@@ -1,7 +1,7 @@
 use maxminddb::{MaxMindDbError, Mmap, Reader as MaxMindReader};
 use napi::{
     bindgen_prelude::{
-        Array, Buffer, Env, JsObjectValue, Null, Object, ToNapiValue, Unknown,
+        Array, Buffer, Either, Env, JsObjectValue, Null, Object, ToNapiValue, Unknown,
     },
     Error, Result, Status,
 };
@@ -54,6 +54,17 @@ impl ReaderSource {
         }
     }
 
+    fn lookup_path(
+        &self,
+        ip: IpAddr,
+        path: &[maxminddb::PathElement<'_>],
+    ) -> std::result::Result<Option<MmdbValue>, MaxMindDbError> {
+        match self {
+            ReaderSource::Mmap(reader) => reader.lookup(ip)?.decode_path(path),
+            ReaderSource::Memory(reader) => reader.lookup(ip)?.decode_path(path),
+        }
+    }
+
     fn metadata(&self) -> &maxminddb::Metadata {
         match self {
             ReaderSource::Mmap(reader) => &reader.metadata,
@@ -76,6 +87,12 @@ enum MmdbValue {
     Bytes(Vec<u8>),
     Array(Vec<MmdbValue>),
     Object(Vec<(String, MmdbValue)>),
+}
+
+enum OwnedPathElement {
+    Key(String),
+    Index(usize),
+    IndexFromEnd(usize),
 }
 
 impl<'de> Deserialize<'de> for MmdbValue {
@@ -288,6 +305,24 @@ impl NativeReader {
         lookup_to_js(env, reader.lookup(ip))
     }
 
+    #[napi(js_name = "getPath")]
+    pub fn get_path<'env>(
+        &self,
+        env: &'env Env,
+        ip_address: String,
+        path: Vec<Either<String, i64>>,
+    ) -> Result<Unknown<'env>> {
+        let ip = self.parse_lookup_ip(&ip_address)?;
+        let owned_path = parse_path(path)?;
+        let path_elements = path_elements_from_owned(&owned_path);
+        let guard = self
+            .reader
+            .read()
+            .map_err(|_| napi_error("reader lock poisoned"))?;
+        let reader = guard.as_ref().ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        lookup_to_js(env, reader.lookup_path(ip, &path_elements))
+    }
+
     #[napi(js_name = "getWithPrefixLength")]
     pub fn get_with_prefix_length<'env>(
         &self,
@@ -307,6 +342,43 @@ impl NativeReader {
         };
         let js_prefix = (prefix_len as u32).into_unknown(env)?;
         Array::from_vec(env, vec![js_value, js_prefix])?.into_unknown(env)
+    }
+
+    #[napi(js_name = "getMany")]
+    pub fn get_many<'env>(&self, env: &'env Env, ips: Vec<String>) -> Result<Unknown<'env>> {
+        let parsed_ips = self.parse_lookup_ips(ips)?;
+        let guard = self
+            .reader
+            .read()
+            .map_err(|_| napi_error("reader lock poisoned"))?;
+        let reader = guard.as_ref().ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        let values = parsed_ips
+            .into_iter()
+            .map(|ip| lookup_to_js(env, reader.lookup(ip)))
+            .collect::<Result<Vec<_>>>()?;
+        Array::from_vec(env, values)?.into_unknown(env)
+    }
+
+    #[napi(js_name = "getManyPath")]
+    pub fn get_many_path<'env>(
+        &self,
+        env: &'env Env,
+        ips: Vec<String>,
+        path: Vec<Either<String, i64>>,
+    ) -> Result<Unknown<'env>> {
+        let parsed_ips = self.parse_lookup_ips(ips)?;
+        let owned_path = parse_path(path)?;
+        let path_elements = path_elements_from_owned(&owned_path);
+        let guard = self
+            .reader
+            .read()
+            .map_err(|_| napi_error("reader lock poisoned"))?;
+        let reader = guard.as_ref().ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        let values = parsed_ips
+            .into_iter()
+            .map(|ip| lookup_to_js(env, reader.lookup_path(ip, &path_elements)))
+            .collect::<Result<Vec<_>>>()?;
+        Array::from_vec(env, values)?.into_unknown(env)
     }
 
     #[napi]
@@ -340,6 +412,10 @@ impl NativeReader {
             )));
         }
         Ok(ip)
+    }
+
+    fn parse_lookup_ips(&self, ips: Vec<String>) -> Result<Vec<IpAddr>> {
+        ips.iter().map(|ip| self.parse_lookup_ip(ip)).collect()
     }
 }
 
@@ -446,6 +522,40 @@ fn metadata_to_js<'env>(env: &'env Env, meta: &maxminddb::Metadata) -> Result<Ob
     object.set_named_property("searchTreeSize", meta.node_count * (meta.record_size as u32 / 4))?;
     object.set_named_property("treeDepth", if meta.ip_version == 4 { 32_u32 } else { 128_u32 })?;
     Ok(object)
+}
+
+fn parse_path(path: Vec<Either<String, i64>>) -> Result<Vec<OwnedPathElement>> {
+    path.into_iter()
+        .map(|element| match element {
+            Either::A(key) => Ok(OwnedPathElement::Key(key)),
+            Either::B(index) => Ok(signed_index_to_path_element(index)),
+        })
+        .collect()
+}
+
+fn signed_index_to_path_element(index: i64) -> OwnedPathElement {
+    if index >= 0 {
+        OwnedPathElement::Index(index as usize)
+    } else {
+        let index_from_end = index
+            .checked_neg()
+            .and_then(|n| n.checked_sub(1))
+            .map(|n| n as usize)
+            .unwrap_or(usize::MAX);
+        OwnedPathElement::IndexFromEnd(index_from_end)
+    }
+}
+
+fn path_elements_from_owned(path: &[OwnedPathElement]) -> Vec<maxminddb::PathElement<'_>> {
+    path.iter()
+        .map(|element| match element {
+            OwnedPathElement::Key(key) => maxminddb::PathElement::Key(key.as_str()),
+            OwnedPathElement::Index(index) => maxminddb::PathElement::Index(*index),
+            OwnedPathElement::IndexFromEnd(index) => {
+                maxminddb::PathElement::IndexFromEnd(*index)
+            }
+        })
+        .collect()
 }
 
 fn parse_ip(ip: &str) -> Result<IpAddr> {
