@@ -86,4 +86,5 @@ npm install
 npm run build
 npm test
 npm run typecheck
+npm run bench -- --compare-node-maxmind
 ```

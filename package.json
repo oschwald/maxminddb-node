@@ -12,6 +12,7 @@
   "scripts": {
     "build": "napi build --platform --release --no-js --dts native.d.ts",
     "build:debug": "napi build --platform --no-js --dts native.d.ts",
+    "bench": "node --expose-gc bench/lookup.js",
     "test": "node --test test/*.test.js",
     "typecheck": "tsc --noEmit"
   },
