@@ -1,5 +1,5 @@
-use maxminddb::{MaxMindDbError, Mmap, Reader as MaxMindReader};
 use maxminddb::WithinOptions;
+use maxminddb::{MaxMindDbError, Mmap, Reader as MaxMindReader};
 use napi::{
     bindgen_prelude::{
         Array, Buffer, Either, Env, JsObjectValue, Null, Object, ToNapiValue, Unknown,
@@ -7,9 +7,7 @@ use napi::{
     Error, Result, Status,
 };
 use napi_derive::napi;
-use serde::de::{
-    self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor,
-};
+use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr},
@@ -407,10 +405,7 @@ impl NativeReader {
         include_networks_without_data: Option<bool>,
         skip_empty_values: Option<bool>,
     ) -> Result<Unknown<'env>> {
-        let cidr = cidr
-            .as_deref()
-            .map(parse_network)
-            .transpose()?;
+        let cidr = cidr.as_deref().map(parse_network).transpose()?;
         let options = make_within_options(
             include_aliased_networks,
             include_networks_without_data,
@@ -543,14 +538,8 @@ fn value_to_js<'env>(env: &'env Env, value: MmdbValue) -> Result<Unknown<'env>> 
 
 fn metadata_to_js<'env>(env: &'env Env, meta: &maxminddb::Metadata) -> Result<Object<'env>> {
     let mut object = Object::new(env)?;
-    object.set_named_property(
-        "binaryFormatMajorVersion",
-        meta.binary_format_major_version,
-    )?;
-    object.set_named_property(
-        "binaryFormatMinorVersion",
-        meta.binary_format_minor_version,
-    )?;
+    object.set_named_property("binaryFormatMajorVersion", meta.binary_format_major_version)?;
+    object.set_named_property("binaryFormatMinorVersion", meta.binary_format_minor_version)?;
     object.set_named_property("buildEpoch", meta.build_epoch as f64)?;
     object.set_named_property("databaseType", meta.database_type.as_str())?;
 
@@ -561,12 +550,25 @@ fn metadata_to_js<'env>(env: &'env Env, meta: &maxminddb::Metadata) -> Result<Ob
     object.set_named_property("description", description)?;
 
     object.set_named_property("ipVersion", meta.ip_version)?;
-    object.set_named_property("languages", Array::from_ref_vec_string(env, &meta.languages)?)?;
+    object.set_named_property(
+        "languages",
+        Array::from_ref_vec_string(env, &meta.languages)?,
+    )?;
     object.set_named_property("nodeCount", meta.node_count)?;
     object.set_named_property("recordSize", meta.record_size)?;
     object.set_named_property("nodeByteSize", meta.record_size / 4)?;
-    object.set_named_property("searchTreeSize", meta.node_count * (meta.record_size as u32 / 4))?;
-    object.set_named_property("treeDepth", if meta.ip_version == 4 { 32_u32 } else { 128_u32 })?;
+    object.set_named_property(
+        "searchTreeSize",
+        meta.node_count * (meta.record_size as u32 / 4),
+    )?;
+    object.set_named_property(
+        "treeDepth",
+        if meta.ip_version == 4 {
+            32_u32
+        } else {
+            128_u32
+        },
+    )?;
     Ok(object)
 }
 
@@ -597,9 +599,7 @@ fn path_elements_from_owned(path: &[OwnedPathElement]) -> Vec<maxminddb::PathEle
         .map(|element| match element {
             OwnedPathElement::Key(key) => maxminddb::PathElement::Key(key.as_str()),
             OwnedPathElement::Index(index) => maxminddb::PathElement::Index(*index),
-            OwnedPathElement::IndexFromEnd(index) => {
-                maxminddb::PathElement::IndexFromEnd(*index)
-            }
+            OwnedPathElement::IndexFromEnd(index) => maxminddb::PathElement::IndexFromEnd(*index),
         })
         .collect()
 }
