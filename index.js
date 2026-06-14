@@ -223,6 +223,8 @@ class Reader {
     this._filepath = null;
     this._watchFilepath = null;
     this._watchListener = null;
+    this._watchReloadPromise = Promise.resolve();
+    this._lastReloadError = null;
     this._cacheCapacity = normalizeCacheCapacity(options);
     this._reader = new native.NativeReader(database, this._cacheCapacity);
     this.metadata = normalizeMetadata(this._reader.metadata());
@@ -236,6 +238,8 @@ class Reader {
     reader._filepath = filepath;
     reader._watchFilepath = null;
     reader._watchListener = null;
+    reader._watchReloadPromise = Promise.resolve();
+    reader._lastReloadError = null;
     reader._cacheCapacity = normalizeCacheCapacity(options);
     reader._reader = native.openReader(filepath, mode, reader._cacheCapacity);
     reader.metadata = normalizeMetadata(reader._reader.metadata());
@@ -247,17 +251,33 @@ class Reader {
     return this._reader.closed;
   }
 
+  get lastReloadError() {
+    return this._lastReloadError;
+  }
+
   load(database) {
-    this._reader.load(database);
-    this.metadata = normalizeMetadata(this._reader.metadata());
+    try {
+      this._reader.load(database);
+      this.metadata = normalizeMetadata(this._reader.metadata());
+      this._lastReloadError = null;
+    } catch (error) {
+      this._lastReloadError = error;
+      throw error;
+    }
   }
 
   reload() {
     if (!this._filepath) {
       throw new Error('Cannot reload a buffer-backed Reader');
     }
-    this._reader.reloadFromFile(this._filepath, this._mode);
-    this.metadata = normalizeMetadata(this._reader.metadata());
+    try {
+      this._reader.reloadFromFile(this._filepath, this._mode);
+      this.metadata = normalizeMetadata(this._reader.metadata());
+      this._lastReloadError = null;
+    } catch (error) {
+      this._lastReloadError = error;
+      throw error;
+    }
   }
 
   close() {
@@ -267,6 +287,37 @@ class Reader {
       this._watchListener = null;
     }
     this._reader.close();
+  }
+
+  _queueWatchedReload(filepath, mode, hook) {
+    const reload = () => this._reloadWatchedFile(filepath, mode, hook);
+    this._watchReloadPromise = this._watchReloadPromise.then(reload, reload);
+  }
+
+  async _reloadWatchedFile(filepath, mode, hook) {
+    if (!(await waitForFile(filepath))) {
+      return;
+    }
+    if (this.closed || this._watchFilepath !== filepath) {
+      return;
+    }
+
+    try {
+      if (mode === MODE_BUFFER) {
+        const database = await readFile(filepath);
+        if (this.closed || this._watchFilepath !== filepath) {
+          return;
+        }
+        this.load(database);
+      } else {
+        this.reload();
+      }
+      if (!this.closed && this._watchFilepath === filepath && hook) {
+        hook();
+      }
+    } catch (error) {
+      this._lastReloadError = error;
+    }
   }
 
   clearCache() {
@@ -365,18 +416,8 @@ async function open(filepath, opts, cb) {
       persistent: options.watchForUpdatesNonPersistent !== true,
     };
 
-    const watchListener = async () => {
-      if (!(await waitForFile(filepath))) {
-        return;
-      }
-      if (mode === MODE_BUFFER) {
-        reader.load(await readFile(filepath));
-      } else {
-        reader.reload();
-      }
-      if (options.watchForUpdatesHook) {
-        options.watchForUpdatesHook();
-      }
+    const watchListener = () => {
+      reader._queueWatchedReload(filepath, mode, options.watchForUpdatesHook);
     };
 
     fs.watchFile(filepath, watcherOptions, watchListener);

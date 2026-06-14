@@ -217,6 +217,7 @@ export declare const MODE_BUFFER: 'buffer';
 export declare class Reader<T extends Response = Response> {
   constructor(database: Buffer, options?: OpenOpts);
   readonly closed: boolean;
+  readonly lastReloadError: Error | null;
   metadata: Metadata;
   load(database: Buffer): void;
   reload(): void;
