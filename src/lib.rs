@@ -1,4 +1,5 @@
 use maxminddb::{MaxMindDbError, Mmap, Reader as MaxMindReader};
+use maxminddb::WithinOptions;
 use napi::{
     bindgen_prelude::{
         Array, Buffer, Either, Env, JsObjectValue, Null, Object, ToNapiValue, Unknown,
@@ -71,6 +72,17 @@ impl ReaderSource {
             ReaderSource::Memory(reader) => &reader.metadata,
         }
     }
+
+    fn collect_networks(
+        &self,
+        cidr: Option<ipnetwork::IpNetwork>,
+        options: WithinOptions,
+    ) -> std::result::Result<Vec<NetworkRecord>, MaxMindDbError> {
+        match self {
+            ReaderSource::Mmap(reader) => collect_networks_for_reader(reader, cidr, options),
+            ReaderSource::Memory(reader) => collect_networks_for_reader(reader, cidr, options),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -93,6 +105,11 @@ enum OwnedPathElement {
     Key(String),
     Index(usize),
     IndexFromEnd(usize),
+}
+
+struct NetworkRecord {
+    network: String,
+    record: Option<MmdbValue>,
 }
 
 impl<'de> Deserialize<'de> for MmdbValue {
@@ -382,6 +399,35 @@ impl NativeReader {
     }
 
     #[napi]
+    pub fn networks<'env>(
+        &self,
+        env: &'env Env,
+        cidr: Option<String>,
+        include_aliased_networks: Option<bool>,
+        include_networks_without_data: Option<bool>,
+        skip_empty_values: Option<bool>,
+    ) -> Result<Unknown<'env>> {
+        let cidr = cidr
+            .as_deref()
+            .map(parse_network)
+            .transpose()?;
+        let options = make_within_options(
+            include_aliased_networks,
+            include_networks_without_data,
+            skip_empty_values,
+        );
+        let guard = self
+            .reader
+            .read()
+            .map_err(|_| napi_error("reader lock poisoned"))?;
+        let reader = guard.as_ref().ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        let records = reader
+            .collect_networks(cidr, options)
+            .map_err(lookup_error)?;
+        network_records_to_js(env, records)
+    }
+
+    #[napi]
     pub fn metadata<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
         let guard = self
             .reader
@@ -558,11 +604,71 @@ fn path_elements_from_owned(path: &[OwnedPathElement]) -> Vec<maxminddb::PathEle
         .collect()
 }
 
+fn collect_networks_for_reader<S: AsRef<[u8]>>(
+    reader: &MaxMindReader<S>,
+    cidr: Option<ipnetwork::IpNetwork>,
+    options: WithinOptions,
+) -> std::result::Result<Vec<NetworkRecord>, MaxMindDbError> {
+    let iter = match cidr {
+        Some(cidr) => reader.within(cidr, options)?,
+        None => reader.networks(options)?,
+    };
+    let mut records = Vec::new();
+    for result in iter {
+        let lookup = result?;
+        let network = lookup.network()?.to_string();
+        let record = lookup.decode::<MmdbValue>()?;
+        records.push(NetworkRecord { network, record });
+    }
+    Ok(records)
+}
+
+fn network_records_to_js<'env>(
+    env: &'env Env,
+    records: Vec<NetworkRecord>,
+) -> Result<Unknown<'env>> {
+    let values = records
+        .into_iter()
+        .map(|record| {
+            let js_record = match record.record {
+                Some(value) => value_to_js(env, value)?,
+                None => Null.into_unknown(env)?,
+            };
+            let network = record.network.into_unknown(env)?;
+            Array::from_vec(env, vec![network, js_record])?.into_unknown(env)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Array::from_vec(env, values)?.into_unknown(env)
+}
+
+fn make_within_options(
+    include_aliased_networks: Option<bool>,
+    include_networks_without_data: Option<bool>,
+    skip_empty_values: Option<bool>,
+) -> WithinOptions {
+    let mut options = WithinOptions::default();
+    if include_aliased_networks.unwrap_or(false) {
+        options = options.include_aliased_networks();
+    }
+    if include_networks_without_data.unwrap_or(false) {
+        options = options.include_networks_without_data();
+    }
+    if skip_empty_values.unwrap_or(false) {
+        options = options.skip_empty_values();
+    }
+    options
+}
+
 fn parse_ip(ip: &str) -> Result<IpAddr> {
     if let Some(ip) = parse_ipv4(ip.as_bytes()) {
         return Ok(IpAddr::V4(ip));
     }
     IpAddr::from_str(ip).map_err(|_| invalid_arg(format!("Invalid IP address: {ip}")))
+}
+
+fn parse_network(cidr: &str) -> Result<ipnetwork::IpNetwork> {
+    ipnetwork::IpNetwork::from_str(cidr)
+        .map_err(|err| invalid_arg(format!("Invalid network CIDR '{cidr}': {err}")))
 }
 
 fn parse_ipv4(bytes: &[u8]) -> Option<Ipv4Addr> {

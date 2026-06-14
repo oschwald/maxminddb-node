@@ -105,6 +105,14 @@ function normalizeMetadata(metadata) {
   };
 }
 
+function normalizeNetworkOptions(options = {}) {
+  return [
+    Boolean(options.includeAliasedNetworks),
+    Boolean(options.includeNetworksWithoutData),
+    Boolean(options.skipEmptyValues),
+  ];
+}
+
 function waitForFile(filepath) {
   for (let i = 0; i < 3; i++) {
     if (fs.existsSync(filepath)) {
@@ -218,6 +226,14 @@ class Reader {
 
   getManyPath(ipAddresses, path) {
     return this._reader.getManyPath(ipAddresses, path);
+  }
+
+  networks(options = {}) {
+    return this._reader.networks(null, ...normalizeNetworkOptions(options));
+  }
+
+  within(cidr, options = {}) {
+    return this._reader.networks(cidr, ...normalizeNetworkOptions(options));
   }
 }
 

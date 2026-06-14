@@ -78,3 +78,14 @@ test('looks up batches', async () => {
     'GB',
   ]);
 });
+
+test('iterates networks within a CIDR', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const records = reader.within('81.2.69.142/31');
+
+  assert(records.length > 0);
+  assert.deepEqual(records[0], [
+    '81.2.69.142/31',
+    reader.get('81.2.69.142'),
+  ]);
+});

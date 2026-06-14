@@ -173,6 +173,12 @@ export interface OpenOpts {
   mode?: typeof MODE_AUTO | typeof MODE_MMAP | typeof MODE_MEMORY | typeof MODE_BUFFER;
 }
 
+export interface NetworkIterationOptions {
+  includeAliasedNetworks?: boolean;
+  includeNetworksWithoutData?: boolean;
+  skipEmptyValues?: boolean;
+}
+
 export declare const MODE_AUTO: 'auto';
 export declare const MODE_MMAP: 'mmap';
 export declare const MODE_MEMORY: 'memory';
@@ -193,6 +199,11 @@ export declare class Reader<T extends Response = Response> {
     ipAddresses: ReadonlyArray<string>,
     path: ReadonlyArray<string | number>,
   ): unknown[];
+  networks(options?: NetworkIterationOptions): Array<[string, T | null]>;
+  within(
+    cidr: string,
+    options?: NetworkIterationOptions,
+  ): Array<[string, T | null]>;
 }
 
 export declare function open<T extends Response = Response>(
