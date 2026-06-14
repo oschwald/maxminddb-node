@@ -10,9 +10,11 @@ crate-type = ["cdylib"]
 name = "maxmind_rs"
 
 [dependencies]
+ipnetwork = "0.21.1"
+maxminddb = { version = "0.28.1", features = ["mmap"] }
 napi = { version = "3.9.2", default-features = false, features = ["napi8"] }
 napi-derive = "3.5.6"
+serde = "1.0.228"
 
 [build-dependencies]
 napi-build = "2.3.2"
-
