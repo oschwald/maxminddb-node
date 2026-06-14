@@ -120,3 +120,6 @@ npm run bench -- --save-baseline /tmp/maxmind-rs-baseline.json
 npm run bench -- --baseline /tmp/maxmind-rs-baseline.json --min-ratio 0.9
 npm run --silent bench -- --json > bench-results.json
 ```
+
+See [RELEASE.md](./RELEASE.md) for packaging expectations and the native
+prebuild release strategy.
