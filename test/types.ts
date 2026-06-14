@@ -28,9 +28,10 @@ async function checkTypes() {
   const fromBuffer = new Reader<CityResponse>(Buffer.alloc(0));
   fromBuffer.close();
 
+  await maxmind.open<CityResponse>('/tmp/example.mmdb', { cache: false });
+
   const isValid: boolean = validate('8.8.8.8');
   void isValid;
 }
 
 void checkTypes;
-

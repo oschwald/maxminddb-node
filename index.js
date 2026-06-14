@@ -57,6 +57,8 @@ const native = loadNativeBinding();
 
 const LARGE_FILE_THRESHOLD = 512 * 1024 * 1024;
 const STREAM_WATERMARK = 8 * 1024 * 1024;
+const DEFAULT_CACHE_MAX = 10_000;
+const MAX_CACHE_MAX = 0xffffffff;
 const legacyErrorMessage = `Maxmind v2 module has changed API.
 Please use:
     maxmind.open(dbfile).then(function(lookup) {
@@ -103,6 +105,18 @@ function normalizeMetadata(metadata) {
     ...metadata,
     buildEpoch: new Date(Number(metadata.buildEpoch) * 1000),
   };
+}
+
+function normalizeCacheCapacity(options = {}) {
+  if (options.cache === false) {
+    return 0;
+  }
+
+  const max = options.cache?.max ?? DEFAULT_CACHE_MAX;
+  if (!Number.isSafeInteger(max) || max <= 0 || max > MAX_CACHE_MAX) {
+    throw new Error('opts.cache.max should be a positive 32-bit integer');
+  }
+  return max;
 }
 
 function normalizeNetworkOptions(options = {}) {
@@ -171,7 +185,8 @@ class Reader {
     }
     this._mode = MODE_BUFFER;
     this._filepath = null;
-    this._reader = new native.NativeReader(database);
+    this._cacheCapacity = normalizeCacheCapacity(options);
+    this._reader = new native.NativeReader(database, this._cacheCapacity);
     this.metadata = normalizeMetadata(this._reader.metadata());
     this.options = options;
   }
@@ -181,7 +196,8 @@ class Reader {
     const reader = Object.create(Reader.prototype);
     reader._mode = mode;
     reader._filepath = filepath;
-    reader._reader = native.openReader(filepath, mode);
+    reader._cacheCapacity = normalizeCacheCapacity(options);
+    reader._reader = native.openReader(filepath, mode, reader._cacheCapacity);
     reader.metadata = normalizeMetadata(reader._reader.metadata());
     reader.options = options;
     return reader;

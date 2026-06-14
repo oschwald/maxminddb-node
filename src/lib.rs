@@ -1,19 +1,22 @@
+use lru::LruCache;
 use maxminddb::WithinOptions;
 use maxminddb::{MaxMindDbError, Mmap, Reader as MaxMindReader};
 use napi::{
     bindgen_prelude::{
-        Array, Buffer, Either, Env, JsObjectValue, Null, Object, ToNapiValue, Unknown,
+        Array, Buffer, Either, Env, JsObjectValue, Null, Object, ObjectFinalize, ToNapiValue,
+        Unknown,
     },
-    Error, Result, Status,
+    Error, Result, Status, UnknownRef,
 };
 use napi_derive::napi;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
+    cell::RefCell,
     fmt,
     net::{IpAddr, Ipv4Addr},
+    num::NonZeroUsize,
     path::Path,
     str::FromStr,
-    sync::RwLock,
 };
 
 const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
@@ -26,29 +29,42 @@ enum ReaderSource {
 }
 
 impl ReaderSource {
-    fn lookup(&self, ip: IpAddr) -> std::result::Result<Option<MmdbValue>, MaxMindDbError> {
+    fn lookup_record_to_js<'env>(
+        &self,
+        env: &'env Env,
+        ip: IpAddr,
+        cache: &RefCell<Option<RecordCache>>,
+    ) -> Result<Unknown<'env>> {
         match self {
-            ReaderSource::Mmap(reader) => reader.lookup(ip)?.decode(),
-            ReaderSource::Memory(reader) => reader.lookup(ip)?.decode(),
+            ReaderSource::Mmap(reader) => {
+                let result = reader.lookup(ip).map_err(lookup_error)?;
+                lookup_result_record_to_js(env, &result, cache)
+            }
+            ReaderSource::Memory(reader) => {
+                let result = reader.lookup(ip).map_err(lookup_error)?;
+                lookup_result_record_to_js(env, &result, cache)
+            }
         }
     }
 
-    fn lookup_prefix(
+    fn lookup_record_with_prefix_to_js<'env>(
         &self,
+        env: &'env Env,
         ip: IpAddr,
-    ) -> std::result::Result<(Option<MmdbValue>, usize), MaxMindDbError> {
+        cache: &RefCell<Option<RecordCache>>,
+    ) -> Result<(Unknown<'env>, usize)> {
         match self {
             ReaderSource::Mmap(reader) => {
-                let result = reader.lookup(ip)?;
-                let network = result.network()?;
+                let result = reader.lookup(ip).map_err(lookup_error)?;
+                let network = result.network().map_err(lookup_error)?;
                 let prefix = prefix_len_for_lookup(ip, network);
-                Ok((result.decode()?, prefix))
+                Ok((lookup_result_record_to_js(env, &result, cache)?, prefix))
             }
             ReaderSource::Memory(reader) => {
-                let result = reader.lookup(ip)?;
-                let network = result.network()?;
+                let result = reader.lookup(ip).map_err(lookup_error)?;
+                let network = result.network().map_err(lookup_error)?;
                 let prefix = prefix_len_for_lookup(ip, network);
-                Ok((result.decode()?, prefix))
+                Ok((lookup_result_record_to_js(env, &result, cache)?, prefix))
             }
         }
     }
@@ -108,6 +124,40 @@ enum OwnedPathElement {
 struct NetworkRecord {
     network: String,
     record: Option<MmdbValue>,
+}
+
+struct RecordCache {
+    values: LruCache<usize, UnknownRef>,
+}
+
+impl RecordCache {
+    fn new(capacity: NonZeroUsize) -> Self {
+        Self {
+            values: LruCache::new(capacity),
+        }
+    }
+
+    fn get<'env>(&mut self, env: &'env Env, offset: usize) -> Result<Option<Unknown<'env>>> {
+        self.values
+            .get(&offset)
+            .map(|value| value.get_value(env))
+            .transpose()
+    }
+
+    fn put(&mut self, env: &Env, offset: usize, value: &Unknown<'_>) -> Result<()> {
+        let reference = value.create_ref()?;
+        if let Some((_old_offset, old_reference)) = self.values.push(offset, reference) {
+            old_reference.unref(env)?;
+        }
+        Ok(())
+    }
+
+    fn clear(&mut self, env: &Env) -> Result<()> {
+        while let Some((_offset, reference)) = self.values.pop_lru() {
+            reference.unref(env)?;
+        }
+        Ok(())
+    }
 }
 
 impl<'de> Deserialize<'de> for MmdbValue {
@@ -256,68 +306,57 @@ impl<'de> DeserializeSeed<'de> for MmdbValueSeed {
     }
 }
 
-#[napi(js_name = "NativeReader")]
+#[napi(js_name = "NativeReader", custom_finalize)]
 pub struct NativeReader {
-    reader: RwLock<Option<ReaderSource>>,
+    reader: Option<ReaderSource>,
+    cache: RefCell<Option<RecordCache>>,
     ip_version: u16,
 }
 
 #[napi]
 impl NativeReader {
     #[napi(constructor)]
-    pub fn new(database: Buffer) -> Result<Self> {
-        Self::from_bytes(database.as_ref().to_vec())
+    pub fn new(database: Buffer, cache_capacity: Option<u32>) -> Result<Self> {
+        Self::from_bytes(database.as_ref().to_vec(), cache_capacity)
     }
 
     #[napi]
-    pub fn load(&mut self, database: Buffer) -> Result<()> {
+    pub fn load(&mut self, env: &Env, database: Buffer) -> Result<()> {
         let new_reader = Self::reader_from_bytes(database.as_ref().to_vec())?;
-        self.ip_version = new_reader.metadata().ip_version;
-        *self
-            .reader
-            .write()
-            .map_err(|_| napi_error("reader lock poisoned"))? = Some(new_reader);
-        Ok(())
+        self.replace_reader(env, new_reader)
     }
 
     #[napi(js_name = "reloadFromFile")]
-    pub fn reload_from_file(&mut self, path: String, mode: Option<String>) -> Result<()> {
+    pub fn reload_from_file(
+        &mut self,
+        env: &Env,
+        path: String,
+        mode: Option<String>,
+    ) -> Result<()> {
         let new_reader = open_source(&path, mode.as_deref())?;
-        self.ip_version = new_reader.metadata().ip_version;
-        *self
-            .reader
-            .write()
-            .map_err(|_| napi_error("reader lock poisoned"))? = Some(new_reader);
-        Ok(())
+        self.replace_reader(env, new_reader)
     }
 
     #[napi(getter)]
     pub fn closed(&self) -> Result<bool> {
-        Ok(self
-            .reader
-            .read()
-            .map_err(|_| napi_error("reader lock poisoned"))?
-            .is_none())
+        Ok(self.reader.is_none())
     }
 
     #[napi]
-    pub fn close(&mut self) -> Result<()> {
-        *self
-            .reader
-            .write()
-            .map_err(|_| napi_error("reader lock poisoned"))? = None;
+    pub fn close(&mut self, env: &Env) -> Result<()> {
+        self.clear_cache(env)?;
+        self.reader = None;
         Ok(())
     }
 
     #[napi]
     pub fn get<'env>(&self, env: &'env Env, ip_address: String) -> Result<Unknown<'env>> {
         let ip = self.parse_lookup_ip(&ip_address)?;
-        let guard = self
+        let reader = self
             .reader
-            .read()
-            .map_err(|_| napi_error("reader lock poisoned"))?;
-        let reader = guard.as_ref().ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        lookup_to_js(env, reader.lookup(ip))
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        reader.lookup_record_to_js(env, ip, &self.cache)
     }
 
     #[napi(js_name = "getPath")]
@@ -330,11 +369,10 @@ impl NativeReader {
         let ip = self.parse_lookup_ip(&ip_address)?;
         let owned_path = parse_path(path)?;
         let path_elements = path_elements_from_owned(&owned_path);
-        let guard = self
+        let reader = self
             .reader
-            .read()
-            .map_err(|_| napi_error("reader lock poisoned"))?;
-        let reader = guard.as_ref().ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         lookup_to_js(env, reader.lookup_path(ip, &path_elements))
     }
 
@@ -345,16 +383,12 @@ impl NativeReader {
         ip_address: String,
     ) -> Result<Unknown<'env>> {
         let ip = self.parse_lookup_ip(&ip_address)?;
-        let guard = self
+        let reader = self
             .reader
-            .read()
-            .map_err(|_| napi_error("reader lock poisoned"))?;
-        let reader = guard.as_ref().ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        let (value, prefix_len) = reader.lookup_prefix(ip).map_err(lookup_error)?;
-        let js_value = match value {
-            Some(value) => value_to_js(env, value)?,
-            None => Null.into_unknown(env)?,
-        };
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        let (js_value, prefix_len) =
+            reader.lookup_record_with_prefix_to_js(env, ip, &self.cache)?;
         let js_prefix = (prefix_len as u32).into_unknown(env)?;
         Array::from_vec(env, vec![js_value, js_prefix])?.into_unknown(env)
     }
@@ -362,14 +396,13 @@ impl NativeReader {
     #[napi(js_name = "getMany")]
     pub fn get_many<'env>(&self, env: &'env Env, ips: Vec<String>) -> Result<Unknown<'env>> {
         let parsed_ips = self.parse_lookup_ips(ips)?;
-        let guard = self
+        let reader = self
             .reader
-            .read()
-            .map_err(|_| napi_error("reader lock poisoned"))?;
-        let reader = guard.as_ref().ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         let values = parsed_ips
             .into_iter()
-            .map(|ip| lookup_to_js(env, reader.lookup(ip)))
+            .map(|ip| reader.lookup_record_to_js(env, ip, &self.cache))
             .collect::<Result<Vec<_>>>()?;
         Array::from_vec(env, values)?.into_unknown(env)
     }
@@ -384,11 +417,10 @@ impl NativeReader {
         let parsed_ips = self.parse_lookup_ips(ips)?;
         let owned_path = parse_path(path)?;
         let path_elements = path_elements_from_owned(&owned_path);
-        let guard = self
+        let reader = self
             .reader
-            .read()
-            .map_err(|_| napi_error("reader lock poisoned"))?;
-        let reader = guard.as_ref().ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         let values = parsed_ips
             .into_iter()
             .map(|ip| lookup_to_js(env, reader.lookup_path(ip, &path_elements)))
@@ -411,11 +443,10 @@ impl NativeReader {
             include_networks_without_data,
             skip_empty_values,
         );
-        let guard = self
+        let reader = self
             .reader
-            .read()
-            .map_err(|_| napi_error("reader lock poisoned"))?;
-        let reader = guard.as_ref().ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         let records = reader
             .collect_networks(cidr, options)
             .map_err(lookup_error)?;
@@ -424,19 +455,18 @@ impl NativeReader {
 
     #[napi]
     pub fn metadata<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
-        let guard = self
+        let reader = self
             .reader
-            .read()
-            .map_err(|_| napi_error("reader lock poisoned"))?;
-        let reader = guard.as_ref().ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         metadata_to_js(env, reader.metadata())
     }
 }
 
 impl NativeReader {
-    fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
+    fn from_bytes(bytes: Vec<u8>, cache_capacity: Option<u32>) -> Result<Self> {
         let source = Self::reader_from_bytes(bytes)?;
-        Ok(create_reader(source))
+        Ok(create_reader(source, cache_capacity))
     }
 
     fn reader_from_bytes(bytes: Vec<u8>) -> Result<ReaderSource> {
@@ -458,11 +488,40 @@ impl NativeReader {
     fn parse_lookup_ips(&self, ips: Vec<String>) -> Result<Vec<IpAddr>> {
         ips.iter().map(|ip| self.parse_lookup_ip(ip)).collect()
     }
+
+    fn replace_reader(&mut self, env: &Env, new_reader: ReaderSource) -> Result<()> {
+        self.clear_cache(env)?;
+        self.ip_version = new_reader.metadata().ip_version;
+        self.reader = Some(new_reader);
+        Ok(())
+    }
+
+    fn clear_cache(&self, env: &Env) -> Result<()> {
+        if let Some(cache) = self
+            .cache
+            .try_borrow_mut()
+            .map_err(|_| napi_error("cache already borrowed"))?
+            .as_mut()
+        {
+            cache.clear(env)?;
+        }
+        Ok(())
+    }
+}
+
+impl ObjectFinalize for NativeReader {
+    fn finalize(self, env: Env) -> Result<()> {
+        self.clear_cache(&env)
+    }
 }
 
 #[napi(js_name = "openReader")]
-pub fn open_reader(path: String, mode: Option<String>) -> Result<NativeReader> {
-    open_source(&path, mode.as_deref()).map(create_reader)
+pub fn open_reader(
+    path: String,
+    mode: Option<String>,
+    cache_capacity: Option<u32>,
+) -> Result<NativeReader> {
+    open_source(&path, mode.as_deref()).map(|source| create_reader(source, cache_capacity))
 }
 
 #[napi(js_name = "nativeVersion")]
@@ -470,10 +529,14 @@ pub fn native_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-fn create_reader(source: ReaderSource) -> NativeReader {
+fn create_reader(source: ReaderSource, cache_capacity: Option<u32>) -> NativeReader {
     let ip_version = source.metadata().ip_version;
+    let cache = cache_capacity
+        .and_then(|capacity| NonZeroUsize::new(capacity as usize))
+        .map(RecordCache::new);
     NativeReader {
-        reader: RwLock::new(Some(source)),
+        reader: Some(source),
+        cache: RefCell::new(cache),
         ip_version,
     }
 }
@@ -499,6 +562,42 @@ fn lookup_to_js<'env>(
     result: std::result::Result<Option<MmdbValue>, MaxMindDbError>,
 ) -> Result<Unknown<'env>> {
     match result.map_err(lookup_error)? {
+        Some(value) => value_to_js(env, value),
+        None => Null.into_unknown(env),
+    }
+}
+
+fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
+    env: &'env Env,
+    result: &maxminddb::LookupResult<'_, S>,
+    cache: &RefCell<Option<RecordCache>>,
+) -> Result<Unknown<'env>> {
+    let Some(offset) = result.offset() else {
+        return Null.into_unknown(env);
+    };
+
+    let mut cache_guard = cache
+        .try_borrow_mut()
+        .map_err(|_| napi_error("cache already borrowed"))?;
+    let Some(cache) = cache_guard.as_mut() else {
+        drop(cache_guard);
+        return lookup_result_record_uncached_to_js(env, result);
+    };
+
+    if let Some(value) = cache.get(env, offset)? {
+        return Ok(value);
+    }
+
+    let value = lookup_result_record_uncached_to_js(env, result)?;
+    cache.put(env, offset, &value)?;
+    Ok(value)
+}
+
+fn lookup_result_record_uncached_to_js<'env, S: AsRef<[u8]>>(
+    env: &'env Env,
+    result: &maxminddb::LookupResult<'_, S>,
+) -> Result<Unknown<'env>> {
+    match result.decode::<MmdbValue>().map_err(lookup_error)? {
         Some(value) => value_to_js(env, value),
         None => Null.into_unknown(env),
     }

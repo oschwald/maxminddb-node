@@ -164,7 +164,7 @@ export interface Metadata {
 }
 
 export interface OpenOpts {
-  cache?: {
+  cache?: false | {
     max: number;
   };
   watchForUpdates?: boolean;

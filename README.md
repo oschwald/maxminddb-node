@@ -42,8 +42,9 @@ console.log(reader.getPath('8.8.8.8', ['country', 'iso_code']));
 - `watchForUpdatesNonPersistent`
 - `watchForUpdatesHook`
 
-`cache` is accepted for compatibility. The Rust reader does not currently use
-the JavaScript LRU cache.
+`cache` controls a native LRU cache of materialized records keyed by MaxMind DB
+data offset. The default is 10,000 records, matching `node-maxmind`. Pass
+`cache: { max: 1000 }` to tune the cache size or `cache: false` to disable it.
 
 ## Extensions
 
@@ -86,4 +87,3 @@ npm run build
 npm test
 npm run typecheck
 ```
-

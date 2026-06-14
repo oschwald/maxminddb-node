@@ -39,6 +39,30 @@ test('constructs reader from buffer', () => {
   assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
 });
 
+test('caches materialized records by data offset', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+
+  const first = reader.get('175.16.199.1');
+  assert.strictEqual(reader.get('175.16.199.1'), first);
+  assert.strictEqual(reader.getWithPrefixLength('175.16.199.1')[0], first);
+
+  const uncached = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'), {
+    cache: false,
+  });
+  assert.notStrictEqual(
+    uncached.get('175.16.199.1'),
+    uncached.get('175.16.199.1')
+  );
+});
+
+test('rejects invalid cache sizes', () => {
+  const buffer = fs.readFileSync(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  assert.throws(
+    () => new maxmind.Reader(buffer, { cache: { max: 0 } }),
+    /positive 32-bit integer/
+  );
+});
+
 test('returns prefix length', async () => {
   const reader = await maxmind.open(
     path.join(dataDir, 'MaxMind-DB-test-ipv4-24.mmdb')
