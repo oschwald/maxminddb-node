@@ -217,6 +217,55 @@ test('closes reader', async () => {
   reader.close();
   assert.equal(reader.closed, true);
   assert.throws(() => reader.get('81.2.69.142'), /closed MaxMind DB/);
+  assert.throws(
+    () => reader.getPath('81.2.69.142', ['country']),
+    /closed MaxMind DB/
+  );
+  assert.throws(
+    () => reader.getWithPrefixLength('81.2.69.142'),
+    /closed MaxMind DB/
+  );
+  assert.throws(() => reader.getMany(['81.2.69.142']), /closed MaxMind DB/);
+  assert.throws(
+    () => reader.getManyPath(['81.2.69.142'], ['country']),
+    /closed MaxMind DB/
+  );
+  assert.throws(() => reader.networks(), /closed MaxMind DB/);
+  assert.throws(
+    () => reader.within('81.2.69.0/24'),
+    /closed MaxMind DB/
+  );
+  assert.throws(() => reader.networksPage(), /closed MaxMind DB/);
+  assert.throws(
+    () => reader.withinPage('81.2.69.0/24'),
+    /closed MaxMind DB/
+  );
+  assert.equal(reader.cacheStats().enabled, true);
+  assert.doesNotThrow(() => reader.clearCache());
+});
+
+test('rejects invalid lookup inputs', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+
+  assert.throws(() => reader.get('not an ip'), /Invalid IP address/);
+  assert.throws(() => reader.getMany(['81.2.69.142', 'not an ip']), /Invalid IP address/);
+  assert.throws(
+    () => reader.getPath('81.2.69.142', [null]),
+    /String.*i64/
+  );
+  assert.throws(
+    () => reader._reader.getCompiledPath('81.2.69.142', 999),
+    /Invalid compiled path id: 999/
+  );
+  assert.throws(() => reader.within('not a cidr'), /Invalid network CIDR/);
+  assert.throws(
+    () => reader.withinPage('81.2.69.0/24', { limit: 0 }),
+    /positive 32-bit integer/
+  );
+  assert.throws(
+    () => reader.withinPage('81.2.69.0/24', { offset: -1 }),
+    /non-negative 32-bit integer/
+  );
 });
 
 test('keeps legacy API errors', () => {
@@ -264,5 +313,107 @@ test('unwatches database files on close', async () => {
   } finally {
     fs.watchFile = originalWatchFile;
     fs.unwatchFile = originalUnwatchFile;
+  }
+});
+
+test('records and clears watched reload failures', async () => {
+  const originalWatchFile = fs.watchFile;
+  const originalUnwatchFile = fs.unwatchFile;
+  const watched = [];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxmind-rs-'));
+  const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  const dbPath = path.join(dir, 'GeoIP2-City-Test.mmdb');
+  const database = fs.readFileSync(sourcePath);
+  let hookCalls = 0;
+  fs.writeFileSync(dbPath, database);
+
+  fs.watchFile = (filepath, options, listener) => {
+    watched.push({ filepath, options, listener });
+  };
+  fs.unwatchFile = () => {};
+
+  try {
+    const reader = await maxmind.open(dbPath, {
+      mode: maxmind.MODE_BUFFER,
+      watchForUpdates: true,
+      watchForUpdatesHook() {
+        hookCalls += 1;
+      },
+    });
+
+    fs.writeFileSync(dbPath, Buffer.from('not an mmdb'));
+    watched[0].listener();
+    await reader._watchReloadPromise;
+
+    assert(reader.lastReloadError instanceof Error);
+    assert.match(reader.lastReloadError.message, /error opening database|bad data|metadata/i);
+    assert.equal(hookCalls, 0);
+    assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
+
+    fs.writeFileSync(dbPath, database);
+    watched[0].listener();
+    await reader._watchReloadPromise;
+
+    assert.equal(reader.lastReloadError, null);
+    assert.equal(hookCalls, 1);
+    reader.close();
+  } finally {
+    fs.watchFile = originalWatchFile;
+    fs.unwatchFile = originalUnwatchFile;
+  }
+});
+
+test('serializes watched buffer reloads', async () => {
+  const originalWatchFile = fs.watchFile;
+  const originalUnwatchFile = fs.unwatchFile;
+  const originalReadFile = fs.promises.readFile;
+  const watched = [];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxmind-rs-'));
+  const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  const dbPath = path.join(dir, 'GeoIP2-City-Test.mmdb');
+  let activeReads = 0;
+  let maxActiveReads = 0;
+  let hookCalls = 0;
+  fs.copyFileSync(sourcePath, dbPath);
+
+  fs.watchFile = (filepath, options, listener) => {
+    watched.push({ filepath, options, listener });
+  };
+  fs.unwatchFile = () => {};
+
+  try {
+    const reader = await maxmind.open(dbPath, {
+      mode: maxmind.MODE_BUFFER,
+      watchForUpdates: true,
+      watchForUpdatesHook() {
+        hookCalls += 1;
+      },
+    });
+
+    fs.promises.readFile = async (...args) => {
+      if (args[0] !== dbPath) {
+        return originalReadFile.apply(fs.promises, args);
+      }
+      activeReads += 1;
+      maxActiveReads = Math.max(maxActiveReads, activeReads);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      try {
+        return await originalReadFile.apply(fs.promises, args);
+      } finally {
+        activeReads -= 1;
+      }
+    };
+
+    watched[0].listener();
+    watched[0].listener();
+    await reader._watchReloadPromise;
+
+    assert.equal(maxActiveReads, 1);
+    assert.equal(hookCalls, 2);
+    reader.close();
+  } finally {
+    fs.watchFile = originalWatchFile;
+    fs.unwatchFile = originalUnwatchFile;
+    fs.promises.readFile = originalReadFile;
   }
 });
