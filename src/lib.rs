@@ -11,6 +11,7 @@ use napi::{
 use napi_derive::napi;
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
+    borrow::Cow,
     cell::RefCell,
     fmt,
     net::{IpAddr, Ipv4Addr},
@@ -73,7 +74,7 @@ impl ReaderSource {
         &self,
         ip: IpAddr,
         path: &[maxminddb::PathElement<'_>],
-    ) -> std::result::Result<Option<MmdbValue>, MaxMindDbError> {
+    ) -> std::result::Result<Option<MmdbValue<'_>>, MaxMindDbError> {
         match self {
             ReaderSource::Mmap(reader) => reader.lookup(ip)?.decode_path(path),
             ReaderSource::Memory(reader) => reader.lookup(ip)?.decode_path(path),
@@ -91,7 +92,7 @@ impl ReaderSource {
         &self,
         cidr: Option<ipnetwork::IpNetwork>,
         options: WithinOptions,
-    ) -> std::result::Result<Vec<NetworkRecord>, MaxMindDbError> {
+    ) -> std::result::Result<Vec<NetworkRecord<'_>>, MaxMindDbError> {
         match self {
             ReaderSource::Mmap(reader) => collect_networks_for_reader(reader, cidr, options),
             ReaderSource::Memory(reader) => collect_networks_for_reader(reader, cidr, options),
@@ -100,7 +101,7 @@ impl ReaderSource {
 }
 
 #[derive(Debug)]
-enum MmdbValue {
+enum MmdbValue<'de> {
     Bool(bool),
     I32(i32),
     I64(i64),
@@ -109,10 +110,10 @@ enum MmdbValue {
     U64(u64),
     U128(u128),
     F64(f64),
-    String(String),
-    Bytes(Vec<u8>),
-    Array(Vec<MmdbValue>),
-    Object(Vec<(String, MmdbValue)>),
+    String(Cow<'de, str>),
+    Bytes(Cow<'de, [u8]>),
+    Array(Vec<MmdbValue<'de>>),
+    Object(Vec<(Cow<'de, str>, MmdbValue<'de>)>),
 }
 
 enum OwnedPathElement {
@@ -121,9 +122,9 @@ enum OwnedPathElement {
     IndexFromEnd(usize),
 }
 
-struct NetworkRecord {
+struct NetworkRecord<'de> {
     network: String,
-    record: Option<MmdbValue>,
+    record: Option<MmdbValue<'de>>,
 }
 
 struct RecordCache {
@@ -160,7 +161,7 @@ impl RecordCache {
     }
 }
 
-impl<'de> Deserialize<'de> for MmdbValue {
+impl<'de> Deserialize<'de> for MmdbValue<'de> {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -172,7 +173,7 @@ impl<'de> Deserialize<'de> for MmdbValue {
 struct MmdbValueVisitor;
 
 impl<'de> Visitor<'de> for MmdbValueVisitor {
-    type Value = MmdbValue;
+    type Value = MmdbValue<'de>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("any valid MaxMind DB value")
@@ -245,28 +246,42 @@ impl<'de> Visitor<'de> for MmdbValueVisitor {
     where
         E: de::Error,
     {
-        Ok(MmdbValue::String(value.to_owned()))
+        Ok(MmdbValue::String(Cow::Owned(value.to_owned())))
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(MmdbValue::String(Cow::Borrowed(value)))
     }
 
     fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(MmdbValue::String(value))
+        Ok(MmdbValue::String(Cow::Owned(value)))
     }
 
     fn visit_bytes<E>(self, value: &[u8]) -> std::result::Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(MmdbValue::Bytes(value.to_vec()))
+        Ok(MmdbValue::Bytes(Cow::Owned(value.to_vec())))
+    }
+
+    fn visit_borrowed_bytes<E>(self, value: &'de [u8]) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(MmdbValue::Bytes(Cow::Borrowed(value)))
     }
 
     fn visit_byte_buf<E>(self, value: Vec<u8>) -> std::result::Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(MmdbValue::Bytes(value))
+        Ok(MmdbValue::Bytes(Cow::Owned(value)))
     }
 
     fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
@@ -285,7 +300,7 @@ impl<'de> Visitor<'de> for MmdbValueVisitor {
         A: MapAccess<'de>,
     {
         let mut values = Vec::with_capacity(map.size_hint().unwrap_or(0));
-        while let Some(key) = map.next_key::<String>()? {
+        while let Some(key) = map.next_key::<Cow<'de, str>>()? {
             let value = map.next_value_seed(MmdbValueSeed)?;
             values.push((key, value));
         }
@@ -296,7 +311,7 @@ impl<'de> Visitor<'de> for MmdbValueVisitor {
 struct MmdbValueSeed;
 
 impl<'de> DeserializeSeed<'de> for MmdbValueSeed {
-    type Value = MmdbValue;
+    type Value = MmdbValue<'de>;
 
     fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
     where
@@ -559,7 +574,7 @@ fn open_source(path: &str, mode: Option<&str>) -> Result<ReaderSource> {
 
 fn lookup_to_js<'env>(
     env: &'env Env,
-    result: std::result::Result<Option<MmdbValue>, MaxMindDbError>,
+    result: std::result::Result<Option<MmdbValue<'_>>, MaxMindDbError>,
 ) -> Result<Unknown<'env>> {
     match result.map_err(lookup_error)? {
         Some(value) => value_to_js(env, value),
@@ -604,13 +619,13 @@ fn lookup_result_record_uncached_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
 ) -> Result<Unknown<'env>> {
-    match result.decode::<MmdbValue>().map_err(lookup_error)? {
+    match result.decode::<MmdbValue<'_>>().map_err(lookup_error)? {
         Some(value) => value_to_js(env, value),
         None => Null.into_unknown(env),
     }
 }
 
-fn value_to_js<'env>(env: &'env Env, value: MmdbValue) -> Result<Unknown<'env>> {
+fn value_to_js<'env>(env: &'env Env, value: MmdbValue<'_>) -> Result<Unknown<'env>> {
     match value {
         MmdbValue::Bool(value) => value.into_unknown(env),
         MmdbValue::I32(value) => value.into_unknown(env),
@@ -623,8 +638,8 @@ fn value_to_js<'env>(env: &'env Env, value: MmdbValue) -> Result<Unknown<'env>> 
         MmdbValue::U64(value) => value.into_unknown(env),
         MmdbValue::U128(value) => value.into_unknown(env),
         MmdbValue::F64(value) => value.into_unknown(env),
-        MmdbValue::String(value) => value.into_unknown(env),
-        MmdbValue::Bytes(value) => Buffer::from(value).into_unknown(env),
+        MmdbValue::String(value) => value.as_ref().into_unknown(env),
+        MmdbValue::Bytes(value) => Buffer::from(value.into_owned()).into_unknown(env),
         MmdbValue::Array(values) => {
             let js_values = values
                 .into_iter()
@@ -710,11 +725,11 @@ fn path_elements_from_owned(path: &[OwnedPathElement]) -> Vec<maxminddb::PathEle
         .collect()
 }
 
-fn collect_networks_for_reader<S: AsRef<[u8]>>(
-    reader: &MaxMindReader<S>,
+fn collect_networks_for_reader<'de, S: AsRef<[u8]>>(
+    reader: &'de MaxMindReader<S>,
     cidr: Option<ipnetwork::IpNetwork>,
     options: WithinOptions,
-) -> std::result::Result<Vec<NetworkRecord>, MaxMindDbError> {
+) -> std::result::Result<Vec<NetworkRecord<'de>>, MaxMindDbError> {
     let iter = match cidr {
         Some(cidr) => reader.within(cidr, options)?,
         None => reader.networks(options)?,
@@ -723,7 +738,7 @@ fn collect_networks_for_reader<S: AsRef<[u8]>>(
     for result in iter {
         let lookup = result?;
         let network = lookup.network()?.to_string();
-        let record = lookup.decode::<MmdbValue>()?;
+        let record = lookup.decode::<MmdbValue<'_>>()?;
         records.push(NetworkRecord { network, record });
     }
     Ok(records)
@@ -731,7 +746,7 @@ fn collect_networks_for_reader<S: AsRef<[u8]>>(
 
 fn network_records_to_js<'env>(
     env: &'env Env,
-    records: Vec<NetworkRecord>,
+    records: Vec<NetworkRecord<'_>>,
 ) -> Result<Unknown<'env>> {
     let values = records
         .into_iter()
