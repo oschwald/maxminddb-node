@@ -61,6 +61,10 @@ for (const [network, record] of reader.within('81.2.69.142/31')) {
 Path elements are strings for map keys and numbers for array indexes. Negative
 indexes count from the end of an array.
 
+For high-volume lookup workloads, prefer `getMany()` or `getManyPath()` when
+you can batch IPs. They cross the native boundary once for the whole batch and
+are significantly faster than calling `get()` in a JavaScript loop.
+
 ## Open Modes
 
 Path-based `open()` defaults to memory-mapped reads:
