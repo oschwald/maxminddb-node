@@ -57,6 +57,12 @@ called, or the reader is closed. `getPath()`, `getManyPath()`, and compiled
 `reader.path()` lookups decode only the requested path and do not populate the
 full-record cache.
 
+When `watchForUpdates` is enabled, file-change reloads run serially. A failed
+watched reload leaves the existing reader active, stores the failure on
+`reader.lastReloadError`, and skips `watchForUpdatesHook`. The next successful
+reload clears `lastReloadError` and calls the hook. Close watched readers with
+`reader.close()` to remove the file watcher.
+
 ## Extensions
 
 ```js
@@ -81,6 +87,10 @@ for (const page of reader.withinPages('81.2.69.0/24', { pageSize: 100 })) {
 
 Path elements are strings for map keys and numbers for array indexes. Negative
 indexes count from the end of an array.
+
+Create compiled path lookups once and reuse them in hot paths. `reader.path()`
+parses and stores the path, and the returned `PathLookup` avoids reparsing the
+path array on each lookup.
 
 For high-volume lookup workloads, prefer `getMany()` or `getManyPath()` when
 you can batch IPs. They cross the native boundary once for the whole batch and
@@ -107,6 +117,48 @@ const reader = await maxmind.open('/path/to/db.mmdb', {
   mode: maxmind.MODE_MEMORY,
 });
 ```
+
+Mode tradeoffs:
+
+- `MODE_MMAP`/`MODE_AUTO` opens quickly and keeps RSS low by mapping the
+  database file. Replace database files atomically when using watched reloads.
+- `MODE_MEMORY` reads the database into Rust-owned memory. It costs more memory
+  at open time but is independent of the source file after open.
+- `MODE_BUFFER` reads the database into a Node `Buffer` before constructing the
+  native reader. Use it when you need Node-side file loading behavior or when
+  tests need to mutate a watched temporary file safely.
+
+## Performance Notes
+
+Performance depends on database size, record shape, cache hit rate, CPU, Node
+version, and whether the database is warm in the OS page cache. On one local
+run with 200,000 generated IPv4 lookups against `/var/lib/GeoIP`, this module
+had much faster open times and lower RSS than `node-maxmind`, while cached
+single-record lookup throughput was still lower:
+
+| Database | maxmind-rs default cache | node-maxmind default cache | maxmind-rs cache:100k | node-maxmind cache:100k |
+| --- | ---: | ---: | ---: | ---: |
+| GeoIP2-City | 370k/s | 441k/s | 632k/s | 869k/s |
+| GeoLite2-City | 452k/s | 498k/s | 715k/s | 1.07M/s |
+
+The same run opened mapped readers in sub-millisecond to low single-digit
+milliseconds after warmup, while `node-maxmind` open times were tens of
+milliseconds and retained tens to hundreds of MB of RSS. Batch lookups were
+faster than JavaScript loops over `get()`, reaching roughly 3.0-3.4M IPs/s in
+that run.
+
+Run local benchmarks with:
+
+```sh
+npm run bench -- --compare-node-maxmind --db /path/to/db.mmdb
+```
+
+## Supported Platforms
+
+The loader probes native filenames for Linux, macOS, Windows, and FreeBSD
+targets. Actual install support depends on which `.node` files are included in
+the npm tarball. See [RELEASE.md](./RELEASE.md) for the current native artifact
+strategy.
 
 ## Development
 
