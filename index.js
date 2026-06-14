@@ -197,6 +197,8 @@ class Reader {
     }
     this._mode = MODE_BUFFER;
     this._filepath = null;
+    this._watchFilepath = null;
+    this._watchListener = null;
     this._cacheCapacity = normalizeCacheCapacity(options);
     this._reader = new native.NativeReader(database, this._cacheCapacity);
     this.metadata = normalizeMetadata(this._reader.metadata());
@@ -208,6 +210,8 @@ class Reader {
     const reader = Object.create(Reader.prototype);
     reader._mode = mode;
     reader._filepath = filepath;
+    reader._watchFilepath = null;
+    reader._watchListener = null;
     reader._cacheCapacity = normalizeCacheCapacity(options);
     reader._reader = native.openReader(filepath, mode, reader._cacheCapacity);
     reader.metadata = normalizeMetadata(reader._reader.metadata());
@@ -233,6 +237,11 @@ class Reader {
   }
 
   close() {
+    if (this._watchFilepath && this._watchListener) {
+      fs.unwatchFile(this._watchFilepath, this._watchListener);
+      this._watchFilepath = null;
+      this._watchListener = null;
+    }
     this._reader.close();
   }
 
@@ -296,7 +305,7 @@ async function open(filepath, opts, cb) {
       persistent: options.watchForUpdatesNonPersistent !== true,
     };
 
-    fs.watchFile(filepath, watcherOptions, async () => {
+    const watchListener = async () => {
       if (!(await waitForFile(filepath))) {
         return;
       }
@@ -308,7 +317,11 @@ async function open(filepath, opts, cb) {
       if (options.watchForUpdatesHook) {
         options.watchForUpdatesHook();
       }
-    });
+    };
+
+    fs.watchFile(filepath, watcherOptions, watchListener);
+    reader._watchFilepath = filepath;
+    reader._watchListener = watchListener;
   }
 
   return reader;

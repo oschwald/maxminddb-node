@@ -161,3 +161,35 @@ test('rejects gzip files in open', async () => {
     /passing in a file in gzip format/
   );
 });
+
+test('unwatches database files on close', async () => {
+  const originalWatchFile = fs.watchFile;
+  const originalUnwatchFile = fs.unwatchFile;
+  const watched = [];
+  const unwatched = [];
+  const dbPath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+
+  fs.watchFile = (filepath, options, listener) => {
+    watched.push({ filepath, options, listener });
+  };
+  fs.unwatchFile = (filepath, listener) => {
+    unwatched.push({ filepath, listener });
+  };
+
+  try {
+    const reader = await maxmind.open(dbPath, { watchForUpdates: true });
+
+    assert.equal(watched.length, 1);
+    assert.equal(watched[0].filepath, dbPath);
+
+    reader.close();
+    reader.close();
+
+    assert.equal(unwatched.length, 1);
+    assert.equal(unwatched[0].filepath, dbPath);
+    assert.strictEqual(unwatched[0].listener, watched[0].listener);
+  } finally {
+    fs.watchFile = originalWatchFile;
+    fs.unwatchFile = originalUnwatchFile;
+  }
+});
