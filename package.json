@@ -1,0 +1,31 @@
+{
+  "name": "maxmind-rs",
+  "version": "0.1.0",
+  "description": "Rust-backed Node.js reader for MaxMind DB files",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
+  "scripts": {
+    "build": "napi build --platform --release --no-js --dts native.d.ts",
+    "build:debug": "napi build --platform --no-js --dts native.d.ts",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "maxmind",
+    "mmdb",
+    "geoip",
+    "geoip2"
+  ],
+  "license": "ISC",
+  "devDependencies": {
+    "@napi-rs/cli": "^3.7.2",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

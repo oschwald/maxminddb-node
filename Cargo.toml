@@ -1,0 +1,18 @@
+[package]
+name = "maxmind-rs"
+version = "0.1.0"
+edition = "2021"
+license = "ISC"
+description = "Rust-backed Node.js reader for MaxMind DB files"
+
+[lib]
+crate-type = ["cdylib"]
+name = "maxmind_rs"
+
+[dependencies]
+napi = { version = "3.9.2", default-features = false, features = ["napi8"] }
+napi-derive = "3.5.6"
+
+[build-dependencies]
+napi-build = "2.3.2"
+
