@@ -73,8 +73,10 @@ Before the first publish, configure the package on npmjs.com:
 The workflow uses Node 24 and upgrades npm before publishing so the npm CLI
 meets trusted publishing requirements. It builds native modules on hosted
 Linux, macOS, and Windows runners, downloads those artifacts into the package
-root, runs the same validation as CI, verifies the package with
-`npm pack --dry-run`, and then runs `npm publish`.
+root, runs the same validation as CI, and verifies the package with
+`npm pack --dry-run`. GitHub release events then run `npm publish`. Manual
+`workflow_dispatch` runs are validation-only unless the `publish` input is set
+to `true`.
 
 ## Release Checklist
 

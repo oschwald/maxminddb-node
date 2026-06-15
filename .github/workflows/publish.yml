@@ -5,6 +5,12 @@ on:
     types:
       - published
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Run npm publish after validation
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -153,4 +159,5 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish package
+        if: ${{ github.event_name == 'release' || inputs.publish }}
         run: npm publish
