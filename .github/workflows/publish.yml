@@ -72,6 +72,9 @@ jobs:
       - name: Build native module
         run: npx napi build --target ${{ matrix.target }} --platform --release --no-js --dts native.d.ts
 
+      - name: Smoke test native module
+        run: node -e "const pkg = require('./package.json'); const maxminddb = require('./'); if (maxminddb.nativeVersion() !== pkg.version) throw new Error('native version mismatch')"
+
       - name: Upload native module
         uses: actions/upload-artifact@v4
         with:
