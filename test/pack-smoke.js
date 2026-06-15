@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
 const npmExecPath = process.env.npm_execpath;
+const packageName = require(path.join(root, 'package.json')).name;
 
 function execFile(command, args, options = {}) {
   return childProcess.execFileSync(command, args, {
@@ -77,13 +78,15 @@ try {
     cwd: tmpdir,
   });
 
+  const packageNameLiteral = JSON.stringify(packageName);
+  const packageJsonLiteral = JSON.stringify(`${packageName}/package.json`);
   execFile(
     process.execPath,
     [
       '-e',
       `
-const maxminddb = require('maxminddb');
-const pkg = require('maxminddb/package.json');
+const maxminddb = require(${packageNameLiteral});
+const pkg = require(${packageJsonLiteral});
 if (maxminddb.nativeVersion() !== pkg.version) {
   throw new Error('native version mismatch');
 }

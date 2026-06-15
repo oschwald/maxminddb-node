@@ -44,10 +44,11 @@ release automation task rather than a runtime API change.
 
 ## Publishing Strategy
 
-The repository currently publishes one package containing every supported
-`index.<triple>.node` file. This keeps installation simple and avoids
-install-time native builds. If the tarball becomes too large, the next packaging
-shape to consider is separate optional dependency packages per target triple:
+The repository currently publishes `@oschwald/maxminddb` as one package
+containing every supported `index.<triple>.node` file. This keeps installation
+simple and avoids install-time native builds. If the tarball becomes too large,
+the next packaging shape to consider is separate optional dependency packages
+per target triple:
 
 - Publish separate optional dependency packages per target triple, each
   containing one `index.<triple>.node`.
@@ -55,6 +56,9 @@ shape to consider is separate optional dependency packages per target triple:
 That model keeps install size small while preserving install-time reliability.
 Publishing source only and building during package installation is intentionally
 not the default release strategy.
+
+The package is scoped and public. `package.json` sets `publishConfig.access` to
+`public`, and local bootstrap publishes should also pass `--access public`.
 
 ## Trusted Publishing
 

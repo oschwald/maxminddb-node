@@ -1,4 +1,4 @@
-# maxminddb
+# @oschwald/maxminddb
 
 Rust-backed Node.js reader for MaxMind DB files.
 
@@ -11,13 +11,13 @@ and network iteration.
 Node.js 20 or newer is required.
 
 ```sh
-npm install maxminddb
+npm install @oschwald/maxminddb
 ```
 
 ## Usage
 
 ```js
-const maxmind = require('maxminddb');
+const maxmind = require('@oschwald/maxminddb');
 
 const reader = await maxmind.open('/path/to/GeoIP2-City.mmdb');
 

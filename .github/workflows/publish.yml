@@ -166,4 +166,4 @@ jobs:
 
       - name: Publish package
         if: ${{ github.event_name == 'release' || inputs.publish }}
-        run: npm publish
+        run: npm publish --access public

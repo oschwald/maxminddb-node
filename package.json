@@ -1,5 +1,5 @@
 {
-  "name": "maxminddb",
+  "name": "@oschwald/maxminddb",
   "version": "0.1.0",
   "description": "Rust-backed Node.js reader for MaxMind DB files",
   "main": "index.js",
@@ -30,6 +30,7 @@
   "homepage": "https://github.com/oschwald/maxminddb-node#readme",
   "author": "Gregory J. Oschwald <oschwald@gmail.com>",
   "publishConfig": {
+    "access": "public",
     "registry": "https://registry.npmjs.org/",
     "provenance": true
   },

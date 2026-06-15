@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Initial Rust-backed Node.js module for MaxMind DB files, published as
-  `maxminddb`.
+  `@oschwald/maxminddb`.
 - Added a `node-maxmind`-compatible API with `open()`, `Reader`, `get()`,
   `getWithPrefixLength()`, `load()`, `metadata`, `validate()`, and legacy
   `init()`/`openSync()` error behavior.
@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The npm package is unscoped as `maxminddb`; the Rust crate package is named
+- The npm package is scoped as `@oschwald/maxminddb`; the Rust crate package is named
   `maxminddb-node` to avoid colliding with the upstream Rust `maxminddb` crate.
 - Package metadata includes repository, homepage, bugs, author, export map, and
   ISC license metadata.
