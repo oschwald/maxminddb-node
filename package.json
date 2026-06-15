@@ -4,12 +4,30 @@
   "description": "Rust-backed Node.js reader for MaxMind DB files",
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "require": "./index.js",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "index.js",
     "index.d.ts",
+    "LICENSE",
     "RELEASE.md",
     "*.node"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oschwald/maxminddb-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/oschwald/maxminddb-node/issues"
+  },
+  "homepage": "https://github.com/oschwald/maxminddb-node#readme",
+  "author": "Gregory J. Oschwald <oschwald@gmail.com>",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "provenance": true

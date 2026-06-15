@@ -177,3 +177,7 @@ npm run --silent bench -- --json > bench-results.json
 
 See [RELEASE.md](./RELEASE.md) for packaging expectations and the native
 prebuild release strategy.
+
+## License
+
+ISC License. See [LICENSE](./LICENSE) for details.
