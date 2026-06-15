@@ -349,6 +349,7 @@ impl NativeReader {
     }
 
     #[napi(js_name = "networksPage")]
+    #[allow(clippy::too_many_arguments)]
     pub fn networks_page<'env>(
         &self,
         env: &'env Env,

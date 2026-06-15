@@ -16,9 +16,9 @@ use std::{
 };
 
 thread_local! {
-    static JS_DECODE_ENV: Cell<sys::napi_env> = Cell::new(ptr::null_mut());
+    static JS_DECODE_ENV: Cell<sys::napi_env> = const { Cell::new(ptr::null_mut()) };
     static JS_DECODE_NAPI_ERROR: RefCell<Option<Error>> = const { RefCell::new(None) };
-    static JS_PROPERTY_NAME_CACHE: Cell<*const RefCell<PropertyNameCache>> = Cell::new(ptr::null());
+    static JS_PROPERTY_NAME_CACHE: Cell<*const RefCell<PropertyNameCache>> = const { Cell::new(ptr::null()) };
 }
 
 #[derive(Debug)]

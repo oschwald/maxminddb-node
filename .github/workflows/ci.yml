@@ -55,7 +55,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Install dependencies
         run: npm ci
@@ -65,6 +65,9 @@ jobs:
 
       - name: Check Rust
         run: cargo check
+
+      - name: Lint Rust
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Build native module
         run: npm run build
