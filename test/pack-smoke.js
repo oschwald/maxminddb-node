@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const npmExecPath = process.env.npm_execpath;
 
 function execFile(command, args, options = {}) {
   return childProcess.execFileSync(command, args, {
@@ -25,11 +25,43 @@ function execFileOutput(command, args, options = {}) {
   });
 }
 
+function npmInvocation(args) {
+  if (npmExecPath) {
+    return {
+      command: process.execPath,
+      args: [npmExecPath, ...args],
+      options: {},
+    };
+  }
+
+  return {
+    command: process.platform === 'win32' ? 'npm.cmd' : 'npm',
+    args,
+    options: process.platform === 'win32' ? { shell: true } : {},
+  };
+}
+
+function execNpm(args, options = {}) {
+  const invocation = npmInvocation(args);
+  return execFile(invocation.command, invocation.args, {
+    ...invocation.options,
+    ...options,
+  });
+}
+
+function execNpmOutput(args, options = {}) {
+  const invocation = npmInvocation(args);
+  return execFileOutput(invocation.command, invocation.args, {
+    ...invocation.options,
+    ...options,
+  });
+}
+
 const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-pack-'));
 let tarball = null;
 
 try {
-  const packOutput = execFileOutput(npm, ['pack', '--json']);
+  const packOutput = execNpmOutput(['pack', '--json']);
   const [packInfo] = JSON.parse(packOutput);
   if (!packInfo?.filename) {
     throw new Error(`Unexpected npm pack output: ${packOutput}`);
@@ -41,7 +73,7 @@ try {
     JSON.stringify({ private: true }, null, 2)
   );
 
-  execFile(npm, ['install', '--ignore-scripts', '--no-audit', '--no-fund', tarball], {
+  execNpm(['install', '--ignore-scripts', '--no-audit', '--no-fund', tarball], {
     cwd: tmpdir,
   });
 
