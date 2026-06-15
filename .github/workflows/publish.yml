@@ -161,6 +161,9 @@ jobs:
       - name: Check npm package
         run: npm pack --dry-run
 
+      - name: Test packed package
+        run: npm run test:pack
+
       - name: Publish package
         if: ${{ github.event_name == 'release' || inputs.publish }}
         run: npm publish

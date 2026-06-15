@@ -80,3 +80,6 @@ jobs:
 
       - name: Check npm package
         run: npm pack --dry-run
+
+      - name: Test packed package
+        run: npm run test:pack

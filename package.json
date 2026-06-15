@@ -37,6 +37,7 @@
     "build:debug": "napi build --platform --no-js --dts native.d.ts",
     "bench": "node --expose-gc bench/lookup.js",
     "test": "node --test test/*.test.js",
+    "test:pack": "node test/pack-smoke.js",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [
