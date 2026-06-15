@@ -13,8 +13,8 @@ use crate::{
     ip::{parse_ip, parse_network, prefix_len_for_lookup},
     metadata::metadata_to_js,
     networks::{
-        collect_networks_for_reader, collect_networks_page_for_reader, make_within_options,
-        network_record_page_to_js, network_records_to_js, NetworkRecord, NetworkRecordPage,
+        collect_networks_for_reader, collect_next_networks_page, make_within_options,
+        network_records_to_js, NetworkIter, NetworkRecord,
     },
     paths::{compiled_path, parse_path, path_elements_from_owned, OwnedPathElement},
 };
@@ -24,7 +24,7 @@ use napi::{
     Result,
 };
 use napi_derive::napi;
-use std::{cell::RefCell, net::IpAddr, num::NonZeroUsize, path::Path};
+use std::{cell::RefCell, net::IpAddr, num::NonZeroUsize, path::Path, sync::Arc};
 
 const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
 
@@ -111,31 +111,62 @@ impl ReaderSource {
         }
     }
 
-    fn collect_networks_page(
+    fn network_iter(
         &self,
         cidr: Option<ipnetwork::IpNetwork>,
         options: WithinOptions,
-        limit: usize,
-        offset: usize,
-    ) -> std::result::Result<NetworkRecordPage<'_>, MaxMindDbError> {
+    ) -> std::result::Result<NetworkIter<'_>, MaxMindDbError> {
         match self {
-            ReaderSource::Mmap(reader) => {
-                collect_networks_page_for_reader(reader, cidr, options, limit, offset)
-            }
-            ReaderSource::Memory(reader) => {
-                collect_networks_page_for_reader(reader, cidr, options, limit, offset)
-            }
+            ReaderSource::Mmap(reader) => NetworkIter::from_mmap(reader, cidr, options),
+            ReaderSource::Memory(reader) => NetworkIter::from_memory(reader, cidr, options),
         }
     }
 }
 
 #[napi(js_name = "NativeReader", custom_finalize)]
 pub struct NativeReader {
-    reader: Option<ReaderSource>,
+    reader: Option<Arc<ReaderSource>>,
     cache: RefCell<Option<RecordCache>>,
     property_names: RefCell<PropertyNameCache>,
     paths: RefCell<Vec<Vec<OwnedPathElement>>>,
     ip_version: u16,
+}
+
+#[napi(js_name = "NativeNetworkCursor")]
+pub struct NativeNetworkCursor {
+    iter: Option<NetworkIter<'static>>,
+    _reader: Arc<ReaderSource>,
+}
+
+impl Drop for NativeNetworkCursor {
+    fn drop(&mut self) {
+        self.iter.take();
+    }
+}
+
+#[napi]
+impl NativeNetworkCursor {
+    #[napi(js_name = "nextPage")]
+    pub fn next_page<'env>(&mut self, env: &'env Env, limit: u32) -> Result<Unknown<'env>> {
+        if limit == 0 {
+            return Err(invalid_arg("page size should be a positive 32-bit integer"));
+        }
+
+        let Some(iter) = self.iter.as_mut() else {
+            return network_records_to_js(env, Vec::new());
+        };
+        let records = collect_next_networks_page(iter, limit as usize).map_err(lookup_error)?;
+        if records.is_empty() {
+            self.iter = None;
+        }
+        network_records_to_js(env, records)
+    }
+
+    #[napi]
+    pub fn close(&mut self) -> Result<()> {
+        self.iter = None;
+        Ok(())
+    }
 }
 
 #[napi]
@@ -348,32 +379,44 @@ impl NativeReader {
         network_records_to_js(env, records)
     }
 
-    #[napi(js_name = "networksPage")]
-    #[allow(clippy::too_many_arguments)]
-    pub fn networks_page<'env>(
+    #[napi(js_name = "networkCursor")]
+    pub fn network_cursor(
         &self,
-        env: &'env Env,
         cidr: Option<String>,
         include_aliased_networks: Option<bool>,
         include_networks_without_data: Option<bool>,
         skip_empty_values: Option<bool>,
-        limit: u32,
-        offset: u32,
-    ) -> Result<Unknown<'env>> {
+    ) -> Result<NativeNetworkCursor> {
         let cidr = cidr.as_deref().map(parse_network).transpose()?;
         let options = make_within_options(
             include_aliased_networks,
             include_networks_without_data,
             skip_empty_values,
         );
-        let reader = self
-            .reader
-            .as_ref()
-            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        let page = reader
-            .collect_networks_page(cidr, options, limit as usize, offset as usize)
-            .map_err(lookup_error)?;
-        network_record_page_to_js(env, page)
+        let reader = Arc::clone(
+            self.reader
+                .as_ref()
+                .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?,
+        );
+        let iter = {
+            // SAFETY: The iterator borrows from the ReaderSource stored in `reader`.
+            // NativeNetworkCursor owns an Arc clone of that ReaderSource and drops
+            // the iterator before releasing the Arc, so the borrowed reader remains
+            // alive for the full iterator lifetime even if the parent Reader reloads
+            // or closes.
+            unsafe {
+                let reader_ref: &ReaderSource = &*(Arc::as_ptr(&reader));
+                std::mem::transmute::<NetworkIter<'_>, NetworkIter<'static>>(
+                    reader_ref
+                        .network_iter(cidr, options)
+                        .map_err(lookup_error)?,
+                )
+            }
+        };
+        Ok(NativeNetworkCursor {
+            iter: Some(iter),
+            _reader: reader,
+        })
     }
 
     #[napi]
@@ -415,7 +458,7 @@ impl NativeReader {
     fn replace_reader(&mut self, env: &Env, new_reader: ReaderSource) -> Result<()> {
         self.clear_record_cache(env)?;
         self.ip_version = new_reader.metadata().ip_version;
-        self.reader = Some(new_reader);
+        self.reader = Some(Arc::new(new_reader));
         Ok(())
     }
 
@@ -468,7 +511,7 @@ fn create_reader(source: ReaderSource, cache_capacity: Option<u32>) -> NativeRea
         .and_then(|capacity| NonZeroUsize::new(capacity as usize))
         .map(RecordCache::new);
     NativeReader {
-        reader: Some(source),
+        reader: Some(Arc::new(source)),
         cache: RefCell::new(cache),
         property_names: RefCell::new(PropertyNameCache::new()),
         paths: RefCell::new(Vec::new()),

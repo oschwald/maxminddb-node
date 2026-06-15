@@ -31,20 +31,18 @@ async function checkTypes() {
   void countryCode;
   opened.getMany(['8.8.8.8']);
   opened.getManyPath(['8.8.8.8'], ['country', 'iso_code']);
-  opened.within('8.8.8.0/24');
-  opened.networks({ skipEmptyValues: true });
-  const page = opened.withinPage('8.8.8.0/24', {
-    limit: 100,
-    offset: 0,
-    skipEmptyValues: true,
-  });
-  const nextOffset: number | null = page.nextOffset;
-  page.records[0]?.[1]?.country?.iso_code;
-  void nextOffset;
-  for (const generatedPage of opened.withinPages('8.8.8.0/24', { pageSize: 100 })) {
-    generatedPage.records[0]?.[1]?.country?.iso_code;
+  for (const [_network, record] of opened.within('8.8.8.0/24')) {
+    record?.country?.iso_code;
   }
-  opened.networkPages({ limit: 100 }).next();
+  const networks = opened.networks({ pageSize: 100, skipEmptyValues: true });
+  const next = networks.next();
+  next.value?.[1]?.country?.iso_code;
+  const page = networks.nextPage(100);
+  page[0]?.[1]?.country?.iso_code;
+  for (const generatedPage of opened.withinPages('8.8.8.0/24', { pageSize: 100 })) {
+    generatedPage[0]?.[1]?.country?.iso_code;
+  }
+  opened.networkPages({ pageSize: 100 }).next();
 
   const fromBuffer = new Reader<CityResponse>(Buffer.alloc(0));
   fromBuffer.close();

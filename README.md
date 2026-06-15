@@ -79,7 +79,7 @@ for (const [network, record] of reader.within('81.2.69.142/31')) {
 }
 
 for (const page of reader.withinPages('81.2.69.0/24', { pageSize: 100 })) {
-  for (const [network, record] of page.records) {
+  for (const [network, record] of page) {
     console.log(network, record);
   }
 }
@@ -96,9 +96,10 @@ For high-volume lookup workloads, prefer `getMany()` or `getManyPath()` when
 you can batch IPs. They cross the native boundary once for the whole batch and
 are significantly faster than calling `get()` in a JavaScript loop.
 
-For large network walks, prefer `networkPages()`, `withinPages()`,
-`networksPage()`, or `withinPage()` over materializing the full
-`networks()`/`within()` result at once.
+`networks()` and `within()` return lazy iterators backed by native cursors.
+For large network walks, use `networkPages()`, `withinPages()`, or
+`NetworkIterator#nextPage()` to cross the native boundary once per page rather
+than once per network.
 
 ## Open Modes
 

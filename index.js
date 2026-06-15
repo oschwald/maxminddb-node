@@ -141,24 +141,18 @@ function normalizeNetworkOptions(options = {}) {
   ];
 }
 
-function normalizeNetworkPageOptions(options = {}) {
-  const limit = options.limit ?? 1000;
-  const offset = options.offset ?? 0;
-  if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_CACHE_MAX) {
-    throw new Error('options.limit should be a positive 32-bit integer');
+function normalizeNetworkPageSize(value = 1000) {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_CACHE_MAX) {
+    throw new Error('page size should be a positive 32-bit integer');
   }
-  if (!Number.isSafeInteger(offset) || offset < 0 || offset > MAX_CACHE_MAX) {
-    throw new Error('options.offset should be a non-negative 32-bit integer');
-  }
-  return [...normalizeNetworkOptions(options), limit, offset];
+  return value;
 }
 
-function normalizeNetworkPageGeneratorOptions(options = {}) {
-  return {
-    ...options,
-    limit: options.pageSize ?? options.limit ?? 1000,
-    offset: options.offset ?? 0,
-  };
+function normalizeNetworkIteratorOptions(options = {}) {
+  return [
+    normalizeNetworkOptions(options),
+    normalizeNetworkPageSize(options.pageSize ?? 1000),
+  ];
 }
 
 function waitForFile(filepath) {
@@ -254,6 +248,83 @@ class PathLookup {
 
   getMany(ipAddresses) {
     return this._reader._reader.getManyCompiledPath(ipAddresses, this._pathId);
+  }
+}
+
+class NetworkIterator {
+  constructor(reader, cidr, options = {}) {
+    const [networkOptions, pageSize] = normalizeNetworkIteratorOptions(options);
+    this._cursor = reader._reader.networkCursor(cidr, ...networkOptions);
+    this._pageSize = pageSize;
+    this._page = [];
+    this._index = 0;
+    this._done = false;
+  }
+
+  [Symbol.iterator]() {
+    return this;
+  }
+
+  next() {
+    if (this._done) {
+      return { done: true, value: undefined };
+    }
+
+    if (this._index >= this._page.length) {
+      this._page = this._cursor.nextPage(this._pageSize);
+      this._index = 0;
+      if (this._page.length === 0) {
+        this.close();
+        return { done: true, value: undefined };
+      }
+    }
+
+    const value = this._page[this._index];
+    this._index += 1;
+    return { done: false, value };
+  }
+
+  nextPage(pageSize = this._pageSize) {
+    pageSize = normalizeNetworkPageSize(pageSize);
+    if (this._done) {
+      return [];
+    }
+
+    const page = [];
+    while (page.length < pageSize && this._index < this._page.length) {
+      page.push(this._page[this._index]);
+      this._index += 1;
+    }
+
+    if (page.length < pageSize) {
+      const nativePage = this._cursor.nextPage(pageSize - page.length);
+      page.push(...nativePage);
+      if (nativePage.length === 0) {
+        this.close();
+      }
+    }
+
+    return page;
+  }
+
+  *pages(pageSize = this._pageSize) {
+    pageSize = normalizeNetworkPageSize(pageSize);
+    while (true) {
+      const page = this.nextPage(pageSize);
+      if (page.length === 0) {
+        return;
+      }
+      yield page;
+    }
+  }
+
+  close() {
+    if (!this._done) {
+      this._cursor.close();
+      this._done = true;
+      this._page = [];
+      this._index = 0;
+    }
   }
 }
 
@@ -396,43 +467,19 @@ class Reader {
   }
 
   networks(options = {}) {
-    return this._reader.networks(null, ...normalizeNetworkOptions(options));
+    return new NetworkIterator(this, null, options);
   }
 
   within(cidr, options = {}) {
-    return this._reader.networks(cidr, ...normalizeNetworkOptions(options));
-  }
-
-  networksPage(options = {}) {
-    return this._reader.networksPage(null, ...normalizeNetworkPageOptions(options));
-  }
-
-  withinPage(cidr, options = {}) {
-    return this._reader.networksPage(cidr, ...normalizeNetworkPageOptions(options));
+    return new NetworkIterator(this, cidr, options);
   }
 
   *networkPages(options = {}) {
-    let pageOptions = normalizeNetworkPageGeneratorOptions(options);
-    while (true) {
-      const page = this.networksPage(pageOptions);
-      yield page;
-      if (page.nextOffset === null) {
-        return;
-      }
-      pageOptions = { ...pageOptions, offset: page.nextOffset };
-    }
+    yield* this.networks(options).pages(options.pageSize ?? 1000);
   }
 
   *withinPages(cidr, options = {}) {
-    let pageOptions = normalizeNetworkPageGeneratorOptions(options);
-    while (true) {
-      const page = this.withinPage(cidr, pageOptions);
-      yield page;
-      if (page.nextOffset === null) {
-        return;
-      }
-      pageOptions = { ...pageOptions, offset: page.nextOffset };
-    }
+    yield* this.within(cidr, options).pages(options.pageSize ?? 1000);
   }
 }
 
@@ -486,6 +533,7 @@ function validate(ipAddress) {
 
 module.exports = {
   ...native,
+  NetworkIterator,
   PathLookup,
   Reader,
   init,

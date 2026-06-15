@@ -179,18 +179,8 @@ export interface NetworkIterationOptions {
   skipEmptyValues?: boolean;
 }
 
-export interface NetworkPageOptions extends NetworkIterationOptions {
-  limit?: number;
-  offset?: number;
-}
-
-export interface NetworkPagesOptions extends NetworkPageOptions {
+export interface NetworkPagesOptions extends NetworkIterationOptions {
   pageSize?: number;
-}
-
-export interface NetworkPage<T extends Response = Response> {
-  records: Array<[string, T | null]>;
-  nextOffset: number | null;
 }
 
 export interface CacheStats {
@@ -207,6 +197,15 @@ export declare class PathLookup<TValue = unknown> {
   readonly path: ReadonlyArray<string | number>;
   get(ipAddress: string): TValue | null;
   getMany(ipAddresses: ReadonlyArray<string>): Array<TValue | null>;
+}
+
+export declare class NetworkIterator<T extends Response = Response>
+  implements IterableIterator<[string, T | null]> {
+  next(): IteratorResult<[string, T | null]>;
+  nextPage(pageSize?: number): Array<[string, T | null]>;
+  pages(pageSize?: number): IterableIterator<Array<[string, T | null]>>;
+  close(): void;
+  [Symbol.iterator](): IterableIterator<[string, T | null]>;
 }
 
 export declare const MODE_AUTO: 'auto';
@@ -235,18 +234,15 @@ export declare class Reader<T extends Response = Response> {
     ipAddresses: ReadonlyArray<string>,
     path: ReadonlyArray<string | number>,
   ): unknown[];
-  networks(options?: NetworkIterationOptions): Array<[string, T | null]>;
-  within(
-    cidr: string,
-    options?: NetworkIterationOptions,
-  ): Array<[string, T | null]>;
-  networksPage(options?: NetworkPageOptions): NetworkPage<T>;
-  withinPage(cidr: string, options?: NetworkPageOptions): NetworkPage<T>;
-  networkPages(options?: NetworkPagesOptions): IterableIterator<NetworkPage<T>>;
+  networks(options?: NetworkPagesOptions): NetworkIterator<T>;
+  within(cidr: string, options?: NetworkPagesOptions): NetworkIterator<T>;
+  networkPages(
+    options?: NetworkPagesOptions,
+  ): IterableIterator<Array<[string, T | null]>>;
   withinPages(
     cidr: string,
     options?: NetworkPagesOptions,
-  ): IterableIterator<NetworkPage<T>>;
+  ): IterableIterator<Array<[string, T | null]>>;
 }
 
 export declare function open<T extends Response = Response>(

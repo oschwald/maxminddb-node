@@ -164,7 +164,7 @@ test('looks up batches', async () => {
 
 test('iterates networks within a CIDR', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
-  const records = reader.within('81.2.69.142/31');
+  const records = [...reader.within('81.2.69.142/31')];
 
   assert(records.length > 0);
   assert.deepEqual(records[0], [
@@ -175,40 +175,48 @@ test('iterates networks within a CIDR', async () => {
 
 test('paginates networks within a CIDR', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
-  const records = reader.within('81.2.69.0/24');
+  const records = [...reader.within('81.2.69.0/24')];
 
   assert(records.length > 1);
 
-  const firstPage = reader.withinPage('81.2.69.0/24', { limit: 1 });
-  assert.deepEqual(firstPage.records, records.slice(0, 1));
-  assert.equal(firstPage.nextOffset, 1);
+  const iterator = reader.within('81.2.69.0/24', { pageSize: 1 });
+  const firstPage = iterator.nextPage();
+  assert.deepEqual(firstPage, records.slice(0, 1));
 
-  const secondPage = reader.withinPage('81.2.69.0/24', {
-    limit: 1,
-    offset: firstPage.nextOffset,
-  });
-  assert.deepEqual(secondPage.records, records.slice(1, 2));
+  const secondPage = iterator.nextPage();
+  assert.deepEqual(secondPage, records.slice(1, 2));
 
   assert.throws(
-    () => reader.withinPage('81.2.69.0/24', { limit: 0 }),
+    () => reader.within('81.2.69.0/24', { pageSize: 0 }),
     /positive 32-bit integer/
   );
 });
 
 test('generates network pages within a CIDR', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
-  const records = reader.within('81.2.69.0/24');
+  const records = [...reader.within('81.2.69.0/24')];
   const pages = [...reader.withinPages('81.2.69.0/24', { pageSize: 1 })];
 
   assert.equal(pages.length, records.length);
   assert.deepEqual(
-    pages.flatMap((page) => page.records),
+    pages.flatMap((page) => page),
     records
   );
-  assert.equal(pages.at(-1).nextOffset, null);
 
-  const firstNetworkPage = reader.networkPages({ limit: 1 }).next().value;
-  assert.equal(firstNetworkPage.records.length, 1);
+  const firstNetworkPage = reader.networkPages({ pageSize: 1 }).next().value;
+  assert.equal(firstNetworkPage.length, 1);
+});
+
+test('network cursors keep a reader snapshot', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const iterator = reader.within('81.2.69.0/24', { pageSize: 1 });
+
+  assert.equal(iterator.nextPage().length, 1);
+  reader.close();
+  assert.equal(iterator.nextPage().length, 1);
+
+  iterator.close();
+  assert.deepEqual(iterator.nextPage(), []);
 });
 
 test('closes reader', async () => {
@@ -236,11 +244,6 @@ test('closes reader', async () => {
     () => reader.within('81.2.69.0/24'),
     /closed MaxMind DB/
   );
-  assert.throws(() => reader.networksPage(), /closed MaxMind DB/);
-  assert.throws(
-    () => reader.withinPage('81.2.69.0/24'),
-    /closed MaxMind DB/
-  );
   assert.equal(reader.cacheStats().enabled, true);
   assert.doesNotThrow(() => reader.clearCache());
 });
@@ -260,12 +263,8 @@ test('rejects invalid lookup inputs', async () => {
   );
   assert.throws(() => reader.within('not a cidr'), /Invalid network CIDR/);
   assert.throws(
-    () => reader.withinPage('81.2.69.0/24', { limit: 0 }),
+    () => reader.within('81.2.69.0/24', { pageSize: 0 }),
     /positive 32-bit integer/
-  );
-  assert.throws(
-    () => reader.withinPage('81.2.69.0/24', { offset: -1 }),
-    /non-negative 32-bit integer/
   );
 });
 
