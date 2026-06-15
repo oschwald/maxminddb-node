@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -282,6 +283,46 @@ test('rejects gzip files in open', async () => {
     () => maxmind.open(gzipPath),
     /passing in a file in gzip format/
   );
+});
+
+test('rejects truncated large-file stream reads', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
+  const dbPath = path.join(dir, 'db.mmdb');
+  fs.writeFileSync(dbPath, Buffer.from([0, 1, 2, 3]));
+
+  const script = `
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const { Readable } = require('node:stream');
+const originalCreateReadStream = fs.createReadStream;
+fs.createReadStream = (filepath, options) => {
+  if (filepath === ${JSON.stringify(dbPath)}) {
+    return Readable.from([Buffer.from([0, 1])]);
+  }
+  return originalCreateReadStream(filepath, options);
+};
+const maxmind = require('.');
+(async () => {
+  await assert.rejects(
+    () => maxmind.open(${JSON.stringify(dbPath)}, { mode: maxmind.MODE_BUFFER }),
+    /File changed while reading/
+  );
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+`;
+
+  const result = childProcess.spawnSync(process.execPath, ['-e', script], {
+    cwd: path.join(__dirname, '..'),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      MAXMINDDB_LARGE_FILE_THRESHOLD_BYTES: '1',
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
 test('unwatches database files on close', async () => {

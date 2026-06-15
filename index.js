@@ -55,7 +55,10 @@ function loadNativeBinding() {
 
 const native = loadNativeBinding();
 
-const LARGE_FILE_THRESHOLD = 512 * 1024 * 1024;
+const DEFAULT_LARGE_FILE_THRESHOLD = 512 * 1024 * 1024;
+const LARGE_FILE_THRESHOLD = normalizeLargeFileThreshold(
+  process.env.MAXMINDDB_LARGE_FILE_THRESHOLD_BYTES
+);
 const STREAM_WATERMARK = 8 * 1024 * 1024;
 const DEFAULT_CACHE_MAX = 10_000;
 const MAX_CACHE_MAX = 0xffffffff;
@@ -70,6 +73,17 @@ const MODE_AUTO = 'auto';
 const MODE_MMAP = 'mmap';
 const MODE_MEMORY = 'memory';
 const MODE_BUFFER = 'buffer';
+
+function normalizeLargeFileThreshold(value) {
+  if (value == null || value === '') {
+    return DEFAULT_LARGE_FILE_THRESHOLD;
+  }
+
+  const threshold = Number(value);
+  return Number.isSafeInteger(threshold) && threshold >= 0
+    ? threshold
+    : DEFAULT_LARGE_FILE_THRESHOLD;
+}
 
 function isGzipBuffer(buffer) {
   return buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b;
@@ -174,20 +188,49 @@ async function readLargeFile(filepath, size) {
   return new Promise((resolve, reject) => {
     const buffer = Buffer.allocUnsafe(size);
     let offset = 0;
+    let settled = false;
     const stream = fs.createReadStream(filepath, {
       highWaterMark: STREAM_WATERMARK,
     });
 
+    const finish = (error, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (error) {
+        stream.destroy();
+        reject(error);
+      } else {
+        resolve(value);
+      }
+    };
+
     stream.on('data', (chunk) => {
       const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (offset + bufferChunk.length > size) {
+        finish(
+          new Error(
+            `File changed while reading ${filepath}: expected ${size} bytes but read more`
+          )
+        );
+        return;
+      }
       bufferChunk.copy(buffer, offset);
       offset += bufferChunk.length;
     });
     stream.on('end', () => {
-      stream.close();
-      resolve(buffer);
+      if (offset !== size) {
+        finish(
+          new Error(
+            `File changed while reading ${filepath}: expected ${size} bytes but read ${offset}`
+          )
+        );
+        return;
+      }
+      finish(null, buffer);
     });
-    stream.on('error', reject);
+    stream.on('error', (error) => finish(error));
   });
 }
 
