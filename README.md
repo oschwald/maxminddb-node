@@ -155,10 +155,12 @@ npm run bench -- --compare-node-maxmind --db /path/to/db.mmdb
 
 ## Supported Platforms
 
-The loader probes native filenames for Linux, macOS, Windows, and FreeBSD
-targets. Actual install support depends on which `.node` files are included in
-the npm tarball. See [RELEASE.md](./RELEASE.md) for the current native artifact
-strategy.
+The npm package is set up to ship prebuilt native modules for Linux x64 GNU,
+Linux arm64 GNU, macOS x64, macOS arm64, Windows x64 MSVC, and Windows arm64
+MSVC. The loader also knows platform-specific filenames for additional Linux,
+Windows, and FreeBSD targets, but those artifacts are not part of the default
+trusted publishing workflow yet. See [RELEASE.md](./RELEASE.md) for the native
+artifact strategy.
 
 ## Development
 

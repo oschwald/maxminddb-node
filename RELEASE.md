@@ -1,8 +1,7 @@
 # Release Notes
 
 This package loads a native N-API addon at runtime. A publishable npm tarball
-must therefore include at least one built `.node` file that matches the target
-platform.
+must therefore include built `.node` files for the platforms it supports.
 
 ## Current Artifact Shape
 
@@ -16,8 +15,8 @@ to `index.node`:
 - Generic fallback: `index.node`
 
 `package.json` includes `*.node` files in the tarball, but it does not build a
-native addon during package installation. Build the addon before packing or
-publishing:
+native addon during package installation. For local packaging checks, build the
+addon before packing:
 
 ```sh
 npm ci
@@ -28,20 +27,34 @@ npm pack --dry-run
 The dry run should show `index.js`, `index.d.ts`, `package.json`, `README.md`,
 and one or more `.node` files.
 
+The trusted publishing workflow assembles one npm package containing these
+prebuilt native modules:
+
+- Linux x64 GNU: `index.linux-x64-gnu.node`
+- Linux arm64 GNU: `index.linux-arm64-gnu.node`
+- macOS x64: `index.darwin-x64.node`
+- macOS arm64: `index.darwin-arm64.node`
+- Windows x64 MSVC: `index.win32-x64-msvc.node`
+- Windows arm64 MSVC: `index.win32-arm64-msvc.node`
+
+The workflow does not currently build Linux musl/Alpine, Linux armv7, Linux
+ppc64/s390x/riscv64, Windows ia32, or FreeBSD artifacts. The loader supports
+platform-specific filenames for several of those targets, so adding them is a
+release automation task rather than a runtime API change.
+
 ## Publishing Strategy
 
-The current repository is ready for a single-platform tarball built on the
-release machine. A multi-platform npm release should use one of these models:
+The repository currently publishes one package containing every supported
+`index.<triple>.node` file. This keeps installation simple and avoids
+install-time native builds. If the tarball becomes too large, the next packaging
+shape to consider is separate optional dependency packages per target triple:
 
 - Publish separate optional dependency packages per target triple, each
   containing one `index.<triple>.node`.
-- Publish one package containing every supported `index.<triple>.node`.
-- Publish source only and add an install-time build path.
 
-The first option is the preferred long-term shape because it keeps install size
-small while preserving install-time reliability. The loader already supports
-platform-specific filenames, so the remaining work is CI release automation and
-optional dependency package metadata.
+That model keeps install size small while preserving install-time reliability.
+Publishing source only and building during package installation is intentionally
+not the default release strategy.
 
 ## Trusted Publishing
 
@@ -58,23 +71,21 @@ Before the first publish, configure the package on npmjs.com:
 - Allowed action: `npm publish`
 
 The workflow uses Node 24 and upgrades npm before publishing so the npm CLI
-meets trusted publishing requirements. It runs the same validation as CI, builds
-the native addon, verifies the package with `npm pack --dry-run`, and then runs
-`npm publish`.
-
-This publishes the Linux x64 GNU native artifact produced by the GitHub-hosted
-Ubuntu runner. Add per-platform packages or a multi-platform artifact assembly
-step before using this workflow for broad platform support.
+meets trusted publishing requirements. It builds native modules on hosted
+Linux, macOS, and Windows runners, downloads those artifacts into the package
+root, runs the same validation as CI, verifies the package with
+`npm pack --dry-run`, and then runs `npm publish`.
 
 ## Release Checklist
 
 1. Configure npm trusted publishing for `.github/workflows/publish.yml`.
-2. Build in release mode with `npm run build`.
-3. Run `cargo fmt -- --check`.
-4. Run `cargo check`.
-5. Run `npm test`.
-6. Run `npm run typecheck`.
-7. Run `npm pack --dry-run` and verify the tarball contents.
-8. Run `npm run bench -- --compare-node-maxmind` when benchmark databases are
+2. Run `cargo fmt -- --check`.
+3. Run `cargo check`.
+4. Run `npm test`.
+5. Run `npm run typecheck`.
+6. Run `npm pack --dry-run` and verify the tarball contents.
+7. Run `npm run bench -- --compare-node-maxmind` when benchmark databases are
    available.
-9. Create a GitHub release to trigger trusted publishing.
+8. Create a GitHub release to trigger trusted publishing.
+9. Verify the `build-binaries` matrix completed for every supported target
+   before the `publish` job runs `npm publish`.
