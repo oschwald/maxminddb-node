@@ -81,13 +81,9 @@ validation-only unless the `publish` input is set to `true`.
 ## Release Checklist
 
 1. Configure npm trusted publishing for `.github/workflows/publish.yml`.
-2. Run `cargo fmt -- --check`.
-3. Run `cargo check`.
-4. Run `npm test`.
-5. Run `npm run typecheck`.
-6. Run `npm pack --dry-run` and verify the tarball contents.
-7. Run `npm run bench -- --compare-node-maxmind` when benchmark databases are
+2. Add a top entry to `CHANGELOG.md` with today's date.
+3. Run `npm run release`.
+4. Run `npm run bench -- --compare-node-maxmind` when benchmark databases are
    available.
-8. Create a GitHub release to trigger trusted publishing.
-9. Verify the `build-binaries` matrix completed for every supported target
+5. Verify the `build-binaries` matrix completed for every supported target
    before the `publish` job runs `npm publish`.

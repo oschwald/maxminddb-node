@@ -171,6 +171,7 @@ npm run build
 npm test
 npm run typecheck
 npm run bench -- --compare-node-maxmind
+npm run release
 npm run bench -- --save-baseline /tmp/maxminddb-baseline.json
 npm run bench -- --baseline /tmp/maxminddb-baseline.json --min-ratio 0.9
 npm run --silent bench -- --json > bench-results.json
