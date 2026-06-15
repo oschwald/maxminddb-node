@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `maxminddb-node` to avoid colliding with the upstream Rust `maxminddb` crate.
 - Package metadata includes repository, homepage, bugs, author, export map, and
   ISC license metadata.
+- Requires Node.js 20 or newer.
 
 ### Fixed
 
@@ -56,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Development
 
-- Added CI for Node 18, 20, 22, and 24, plus macOS and Windows coverage.
+- Added CI for Node 20, 22, and 24, plus macOS and Windows coverage.
 - Added Rust formatting, `cargo check`, clippy, TypeScript, Node test, npm pack,
   and packed-package smoke-test validation.
 

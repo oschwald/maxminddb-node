@@ -8,6 +8,8 @@ and network iteration.
 
 ## Install
 
+Node.js 20 or newer is required.
+
 ```sh
 npm install maxminddb
 ```
