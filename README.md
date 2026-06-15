@@ -16,8 +16,11 @@ npm install @oschwald/maxminddb
 
 ## Usage
 
+These examples use ES modules. Save them as `.mjs`, or set `"type": "module"`
+in your `package.json`.
+
 ```js
-const maxmind = require('@oschwald/maxminddb');
+import maxmind from '@oschwald/maxminddb';
 
 const reader = await maxmind.open('/path/to/GeoIP2-City.mmdb');
 
@@ -25,6 +28,9 @@ console.log(reader.get('8.8.8.8'));
 console.log(reader.getWithPrefixLength('8.8.8.8'));
 console.log(reader.getPath('8.8.8.8', ['country', 'iso_code']));
 ```
+
+CommonJS `require()` is also supported for compatibility with existing
+`node-maxmind` users.
 
 ## Compatibility API
 
@@ -116,6 +122,8 @@ Use `MODE_BUFFER` if you want `open()` to read the file into a Node `Buffer`
 before constructing the reader.
 
 ```js
+import maxmind from '@oschwald/maxminddb';
+
 const reader = await maxmind.open('/path/to/db.mmdb', {
   mode: maxmind.MODE_MEMORY,
 });
