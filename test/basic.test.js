@@ -186,6 +186,11 @@ test('paginates networks within a CIDR', async () => {
   const secondPage = iterator.nextPage();
   assert.deepEqual(secondPage, records.slice(1, 2));
 
+  assert.deepEqual(
+    reader.within('81.2.69.0/24').nextPage(0xffffffff),
+    records
+  );
+
   assert.throws(
     () => reader.within('81.2.69.0/24', { pageSize: 0 }),
     /positive 32-bit integer/
@@ -403,7 +408,7 @@ test('records and clears watched reload failures', async () => {
   }
 });
 
-test('serializes watched buffer reloads', async () => {
+test('coalesces and serializes watched buffer reloads', async () => {
   const originalWatchFile = fs.watchFile;
   const originalUnwatchFile = fs.unwatchFile;
   const originalReadFile = fs.promises.readFile;
@@ -415,6 +420,17 @@ test('serializes watched buffer reloads', async () => {
   let maxActiveReads = 0;
   let hookCalls = 0;
   fs.copyFileSync(sourcePath, dbPath);
+
+  const waitForActiveRead = async () => {
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (activeReads > 0) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('timed out waiting for active watched reload read');
+  };
 
   fs.watchFile = (filepath, options, listener) => {
     watched.push({ filepath, options, listener });
@@ -445,11 +461,19 @@ test('serializes watched buffer reloads', async () => {
     };
 
     watched[0].listener();
+    await waitForActiveRead();
+    watched[0].listener();
     watched[0].listener();
     await reader._watchReloadPromise;
 
     assert.equal(maxActiveReads, 1);
     assert.equal(hookCalls, 2);
+
+    watched[0].listener();
+    watched[0].listener();
+    await reader._watchReloadPromise;
+
+    assert.equal(hookCalls, 3);
     reader.close();
   } finally {
     fs.watchFile = originalWatchFile;

@@ -2,10 +2,9 @@ use crate::{
     cache::{PropertyNameCache, RecordCache},
     errors::{lookup_error, napi_error},
 };
-use maxminddb::MaxMindDbError;
 use napi::{
-    bindgen_prelude::{Array, Buffer, Env, Null, ToNapiValue, Unknown},
-    check_status, sys, Error, JsValue, Result,
+    bindgen_prelude::{Env, Null, ToNapiValue, Unknown},
+    check_status, sys, Error, Result,
 };
 use serde::de::{self, Deserialize, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::{
@@ -19,22 +18,6 @@ thread_local! {
     static JS_DECODE_ENV: Cell<sys::napi_env> = const { Cell::new(ptr::null_mut()) };
     static JS_DECODE_NAPI_ERROR: RefCell<Option<Error>> = const { RefCell::new(None) };
     static JS_PROPERTY_NAME_CACHE: Cell<*const RefCell<PropertyNameCache>> = const { Cell::new(ptr::null()) };
-}
-
-#[derive(Debug)]
-pub(crate) enum MmdbValue<'de> {
-    Bool(bool),
-    I32(i32),
-    I64(i64),
-    U16(u16),
-    U32(u32),
-    U64(u64),
-    U128(u128),
-    F64(f64),
-    String(Cow<'de, str>),
-    Bytes(Cow<'de, [u8]>),
-    Array(Vec<MmdbValue<'de>>),
-    Object(Vec<(Cow<'de, str>, MmdbValue<'de>)>),
 }
 
 struct RawJsValue(sys::napi_value);
@@ -72,166 +55,6 @@ impl Drop for JsDecodeEnvGuard {
             cell.replace(self.previous_error.take());
         });
         JS_PROPERTY_NAME_CACHE.with(|cell| cell.set(self.previous_property_name_cache));
-    }
-}
-
-impl<'de> Deserialize<'de> for MmdbValue<'de> {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_any(MmdbValueVisitor)
-    }
-}
-
-struct MmdbValueVisitor;
-
-impl<'de> Visitor<'de> for MmdbValueVisitor {
-    type Value = MmdbValue<'de>;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("any valid MaxMind DB value")
-    }
-
-    fn visit_bool<E>(self, value: bool) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::Bool(value))
-    }
-
-    fn visit_i32<E>(self, value: i32) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::I32(value))
-    }
-
-    fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::I64(value))
-    }
-
-    fn visit_u16<E>(self, value: u16) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::U16(value))
-    }
-
-    fn visit_u32<E>(self, value: u32) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::U32(value))
-    }
-
-    fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::U64(value))
-    }
-
-    fn visit_u128<E>(self, value: u128) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::U128(value))
-    }
-
-    fn visit_f32<E>(self, value: f32) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::F64(f64::from(value)))
-    }
-
-    fn visit_f64<E>(self, value: f64) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::F64(value))
-    }
-
-    fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::String(Cow::Owned(value.to_owned())))
-    }
-
-    fn visit_borrowed_str<E>(self, value: &'de str) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::String(Cow::Borrowed(value)))
-    }
-
-    fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::String(Cow::Owned(value)))
-    }
-
-    fn visit_bytes<E>(self, value: &[u8]) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::Bytes(Cow::Owned(value.to_vec())))
-    }
-
-    fn visit_borrowed_bytes<E>(self, value: &'de [u8]) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::Bytes(Cow::Borrowed(value)))
-    }
-
-    fn visit_byte_buf<E>(self, value: Vec<u8>) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(MmdbValue::Bytes(Cow::Owned(value)))
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let mut values = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-        while let Some(value) = seq.next_element_seed(MmdbValueSeed)? {
-            values.push(value);
-        }
-        Ok(MmdbValue::Array(values))
-    }
-
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut values = Vec::with_capacity(map.size_hint().unwrap_or(0));
-        while let Some(key) = map.next_key::<Cow<'de, str>>()? {
-            let value = map.next_value_seed(MmdbValueSeed)?;
-            values.push((key, value));
-        }
-        Ok(MmdbValue::Object(values))
-    }
-}
-
-struct MmdbValueSeed;
-
-impl<'de> DeserializeSeed<'de> for MmdbValueSeed {
-    type Value = MmdbValue<'de>;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        MmdbValue::deserialize(deserializer)
     }
 }
 
@@ -435,16 +258,6 @@ impl<'de> DeserializeSeed<'de> for RawJsValueSeed {
     }
 }
 
-pub(crate) fn lookup_to_js<'env>(
-    env: &'env Env,
-    result: std::result::Result<Option<MmdbValue<'_>>, MaxMindDbError>,
-) -> Result<Unknown<'env>> {
-    match result.map_err(lookup_error)? {
-        Some(value) => value_to_js(env, value),
-        None => Null.into_unknown(env),
-    }
-}
-
 pub(crate) fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
@@ -479,7 +292,21 @@ pub(crate) fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
     Ok(value)
 }
 
-fn lookup_result_record_uncached_to_js<'env, S: AsRef<[u8]>>(
+pub(crate) fn lookup_result_path_to_js<'env, S: AsRef<[u8]>>(
+    env: &'env Env,
+    result: &maxminddb::LookupResult<'_, S>,
+    path: &[maxminddb::PathElement<'_>],
+    property_names: &RefCell<PropertyNameCache>,
+) -> Result<Unknown<'env>> {
+    let _guard = JsDecodeEnvGuard::enter(env.raw(), property_names);
+    match result.decode_path::<RawJsValue>(path) {
+        Ok(Some(value)) => Ok(value.into_unknown(env)),
+        Ok(None) => Null.into_unknown(env),
+        Err(err) => Err(take_js_decode_napi_error().unwrap_or_else(|| lookup_error(err))),
+    }
+}
+
+pub(crate) fn lookup_result_record_uncached_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
     property_names: &RefCell<PropertyNameCache>,
@@ -714,77 +541,4 @@ fn raw_object_entries(
     }
 
     Ok(RawJsValue(object))
-}
-
-pub(crate) fn value_to_js<'env>(env: &'env Env, value: MmdbValue<'_>) -> Result<Unknown<'env>> {
-    match value {
-        MmdbValue::Bool(value) => value.into_unknown(env),
-        MmdbValue::I32(value) => value.into_unknown(env),
-        MmdbValue::I64(value) if value >= i32::MIN as i64 && value <= i32::MAX as i64 => {
-            (value as i32).into_unknown(env)
-        }
-        MmdbValue::I64(value) => value.into_unknown(env),
-        MmdbValue::U16(value) => value.into_unknown(env),
-        MmdbValue::U32(value) => value.into_unknown(env),
-        MmdbValue::U64(value) => value.into_unknown(env),
-        MmdbValue::U128(value) => value.into_unknown(env),
-        MmdbValue::F64(value) => value.into_unknown(env),
-        MmdbValue::String(value) => value.as_ref().into_unknown(env),
-        MmdbValue::Bytes(value) => Buffer::from(value.into_owned()).into_unknown(env),
-        MmdbValue::Array(values) => {
-            let js_values = values
-                .into_iter()
-                .map(|value| value_to_js(env, value))
-                .collect::<Result<Vec<_>>>()?;
-            Array::from_vec(env, js_values)?.into_unknown(env)
-        }
-        MmdbValue::Object(values) => object_entries_to_js(env, values),
-    }
-}
-
-fn object_entries_to_js<'env>(
-    env: &'env Env,
-    values: Vec<(Cow<'_, str>, MmdbValue<'_>)>,
-) -> Result<Unknown<'env>> {
-    let raw_env = env.raw();
-    let mut object = ptr::null_mut();
-    check_status!(
-        unsafe { sys::napi_create_object(raw_env, &mut object) },
-        "Failed to create object",
-    )?;
-
-    let mut descriptors = Vec::with_capacity(values.len());
-    for (key, value) in values {
-        let key = key.as_ref();
-        let name = raw_js_string(raw_env, key)?;
-        let value = value_to_js(env, value)?;
-        descriptors.push(sys::napi_property_descriptor {
-            utf8name: ptr::null(),
-            name,
-            method: None,
-            getter: None,
-            setter: None,
-            value: value.raw(),
-            attributes: sys::PropertyAttributes::writable
-                | sys::PropertyAttributes::enumerable
-                | sys::PropertyAttributes::configurable,
-            data: ptr::null_mut(),
-        });
-    }
-
-    if !descriptors.is_empty() {
-        check_status!(
-            unsafe {
-                sys::napi_define_properties(
-                    raw_env,
-                    object,
-                    descriptors.len(),
-                    descriptors.as_ptr(),
-                )
-            },
-            "Failed to define properties",
-        )?;
-    }
-
-    Ok(unsafe { Unknown::from_raw_unchecked(raw_env, object) })
 }

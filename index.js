@@ -337,6 +337,8 @@ class Reader {
     this._filepath = null;
     this._watchFilepath = null;
     this._watchListener = null;
+    this._watchReloadActive = false;
+    this._watchReloadPending = false;
     this._watchReloadPromise = Promise.resolve();
     this._lastReloadError = null;
     this._cacheCapacity = normalizeCacheCapacity(options);
@@ -352,6 +354,8 @@ class Reader {
     reader._filepath = filepath;
     reader._watchFilepath = null;
     reader._watchListener = null;
+    reader._watchReloadActive = false;
+    reader._watchReloadPending = false;
     reader._watchReloadPromise = Promise.resolve();
     reader._lastReloadError = null;
     reader._cacheCapacity = normalizeCacheCapacity(options);
@@ -400,12 +404,35 @@ class Reader {
       this._watchFilepath = null;
       this._watchListener = null;
     }
+    this._watchReloadPending = false;
     this._reader.close();
   }
 
   _queueWatchedReload(filepath, mode, hook) {
-    const reload = () => this._reloadWatchedFile(filepath, mode, hook);
-    this._watchReloadPromise = this._watchReloadPromise.then(reload, reload);
+    this._watchReloadPending = true;
+    if (this._watchReloadActive) {
+      return;
+    }
+
+    this._watchReloadActive = true;
+    const drainReloads = async () => {
+      try {
+        while (this._watchReloadPending) {
+          this._watchReloadPending = false;
+          await this._reloadWatchedFile(filepath, mode, hook);
+        }
+      } finally {
+        this._watchReloadActive = false;
+        if (this._watchReloadPending) {
+          this._queueWatchedReload(filepath, mode, hook);
+        }
+      }
+    };
+
+    this._watchReloadPromise = this._watchReloadPromise.then(
+      drainReloads,
+      drainReloads
+    );
   }
 
   async _reloadWatchedFile(filepath, mode, hook) {

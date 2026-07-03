@@ -13,6 +13,8 @@ const DEFAULT_DBS = [
 
 const DEFAULT_COUNT = 200_000;
 const DEFAULT_WARMUP = 50_000;
+const DEFAULT_NETWORK_CIDR = '81.2.69.0/24';
+const DEFAULT_NETWORK_PAGE_SIZE = 1000;
 
 function parseArgs(argv) {
   const options = {
@@ -23,6 +25,8 @@ function parseArgs(argv) {
     dbs: [],
     json: false,
     minRatio: 0.9,
+    networkCidr: DEFAULT_NETWORK_CIDR,
+    networkPageSize: DEFAULT_NETWORK_PAGE_SIZE,
     saveBaseline: null,
   };
 
@@ -38,6 +42,19 @@ function parseArgs(argv) {
       options.json = true;
     } else if (arg === '--min-ratio') {
       options.minRatio = parsePositiveNumber(argv[++i], '--min-ratio');
+    } else if (arg === '--network-cidr') {
+      options.networkCidr = parseRequiredValue(
+        argv[++i],
+        '--network-cidr',
+        'a CIDR'
+      );
+    } else if (arg === '--network-page-size') {
+      options.networkPageSize = parsePositiveInteger(
+        argv[++i],
+        '--network-page-size'
+      );
+    } else if (arg === '--no-network-bench') {
+      options.networkCidr = null;
     } else if (arg === '--save-baseline') {
       options.saveBaseline = argv[++i];
     } else if (arg === '--warmup') {
@@ -77,6 +94,13 @@ function parsePositiveInteger(value, name) {
   return number;
 }
 
+function parseRequiredValue(value, name, description) {
+  if (value == null || value === '' || value.startsWith('--')) {
+    throw new Error(`${name} requires ${description}`);
+  }
+  return value;
+}
+
 function parsePositiveNumber(value, name) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) {
@@ -94,6 +118,9 @@ Options:
   --count <n>                Number of lookup IPs, default ${DEFAULT_COUNT}
   --json                     Print machine-readable JSON instead of tables
   --min-ratio <n>            Minimum current/baseline rate, default 0.9
+  --network-cidr <cidr>      CIDR for network iteration benchmark, default ${DEFAULT_NETWORK_CIDR}
+  --network-page-size <n>    Page size for network iteration benchmark, default ${DEFAULT_NETWORK_PAGE_SIZE}
+  --no-network-bench         Skip network iteration benchmark
   --save-baseline <path>     Write benchmark results as a JSON baseline
   --warmup <n>               Warmup lookup count, default ${DEFAULT_WARMUP}
   --compare-node-maxmind     Compare against ../node-maxmind when available
@@ -208,6 +235,47 @@ function benchMany(label, reader, ips, warmupCount, lookupMany, dbResult, option
   return result;
 }
 
+function benchNetworkPages(label, reader, cidr, pageSize, dbResult, options) {
+  gc();
+
+  let pages = 0;
+  let records = 0;
+  let withData = 0;
+  const start = process.hrtime.bigint();
+  for (const page of reader.withinPages(cidr, { pageSize })) {
+    pages += 1;
+    records += page.length;
+    for (const [, record] of page) {
+      if (record) {
+        withData += 1;
+      }
+    }
+  }
+  const elapsed = Number(process.hrtime.bigint() - start) / 1e9;
+
+  if (records === 0) {
+    logHuman(options, `${label.padEnd(36)} skipped, no records for ${cidr}`);
+    return null;
+  }
+
+  const result = {
+    label,
+    count: records,
+    found: withData,
+    seconds: elapsed,
+    rate: records / elapsed,
+    pages,
+    pageSize,
+    cidr,
+  };
+  dbResult.benchmarks.push(result);
+  logHuman(
+    options,
+    `${label.padEnd(36)} ${formatRate(records, elapsed).padStart(12)}/s records ${records.toLocaleString('en-US').padStart(8)} pages ${pages.toLocaleString('en-US').padStart(6)} time ${elapsed.toFixed(3).padStart(7)} s`
+  );
+  return result;
+}
+
 async function closeMaybe(reader) {
   if (reader && typeof reader.close === 'function') {
     reader.close();
@@ -282,6 +350,24 @@ async function benchDatabase(db, options, ips, nodeMaxmind) {
     options
   );
   benchMany(
+    'getManyPath country.iso',
+    cached,
+    ips,
+    options.warmup,
+    (reader, values) => reader.getManyPath(values, ['country', 'iso_code']),
+    dbResult,
+    options
+  );
+  benchMany(
+    'path.getMany country.iso',
+    countryIso,
+    ips,
+    options.warmup,
+    (lookup, values) => lookup.getMany(values),
+    dbResult,
+    options
+  );
+  benchMany(
     'getMany default cache',
     cached,
     ips,
@@ -290,6 +376,16 @@ async function benchDatabase(db, options, ips, nodeMaxmind) {
     dbResult,
     options
   );
+  if (options.networkCidr) {
+    benchNetworkPages(
+      'withinPages default cache',
+      cached,
+      options.networkCidr,
+      options.networkPageSize,
+      dbResult,
+      options
+    );
+  }
   await closeMaybe(cached);
 
   const largerCache = await benchOpen(
