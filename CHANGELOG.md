@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated the Rust `maxminddb` dependency to 0.29.0 and refreshed Rust and npm
   development dependencies.
 
+### Performance
+
+- Decoded path lookup results directly into JavaScript values to reduce
+  intermediate allocations for `getPath()`, `getManyPath()`, and compiled path
+  lookups.
+
 ## [0.1.0] - 2026-06-14
 
 ### Added

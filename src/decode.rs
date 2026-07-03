@@ -2,7 +2,6 @@ use crate::{
     cache::{PropertyNameCache, RecordCache},
     errors::{lookup_error, napi_error},
 };
-use maxminddb::MaxMindDbError;
 use napi::{
     bindgen_prelude::{Array, Buffer, Env, Null, ToNapiValue, Unknown},
     check_status, sys, Error, JsValue, Result,
@@ -435,16 +434,6 @@ impl<'de> DeserializeSeed<'de> for RawJsValueSeed {
     }
 }
 
-pub(crate) fn lookup_to_js<'env>(
-    env: &'env Env,
-    result: std::result::Result<Option<MmdbValue<'_>>, MaxMindDbError>,
-) -> Result<Unknown<'env>> {
-    match result.map_err(lookup_error)? {
-        Some(value) => value_to_js(env, value),
-        None => Null.into_unknown(env),
-    }
-}
-
 pub(crate) fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
@@ -477,6 +466,20 @@ pub(crate) fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
         record_cache.put(env, offset, &value)?;
     }
     Ok(value)
+}
+
+pub(crate) fn lookup_result_path_to_js<'env, S: AsRef<[u8]>>(
+    env: &'env Env,
+    result: &maxminddb::LookupResult<'_, S>,
+    path: &[maxminddb::PathElement<'_>],
+    property_names: &RefCell<PropertyNameCache>,
+) -> Result<Unknown<'env>> {
+    let _guard = JsDecodeEnvGuard::enter(env.raw(), property_names);
+    match result.decode_path::<RawJsValue>(path) {
+        Ok(Some(value)) => Ok(value.into_unknown(env)),
+        Ok(None) => Null.into_unknown(env),
+        Err(err) => Err(take_js_decode_napi_error().unwrap_or_else(|| lookup_error(err))),
+    }
 }
 
 fn lookup_result_record_uncached_to_js<'env, S: AsRef<[u8]>>(

@@ -8,7 +8,7 @@ mod paths;
 
 use crate::{
     cache::{cache_stats_to_js, PropertyNameCache, RecordCache},
-    decode::{lookup_result_record_to_js, lookup_to_js, MmdbValue},
+    decode::{lookup_result_path_to_js, lookup_result_record_to_js},
     errors::{invalid_arg, lookup_error, napi_error, open_error},
     ip::{parse_ip, parse_network, prefix_len_for_lookup},
     metadata::metadata_to_js,
@@ -94,14 +94,22 @@ impl ReaderSource {
         }
     }
 
-    fn lookup_path(
+    fn lookup_path_to_js<'env>(
         &self,
+        env: &'env Env,
         ip: IpAddr,
         path: &[maxminddb::PathElement<'_>],
-    ) -> std::result::Result<Option<MmdbValue<'_>>, MaxMindDbError> {
+        property_names: &RefCell<PropertyNameCache>,
+    ) -> Result<Unknown<'env>> {
         match self {
-            ReaderSource::Mmap(reader) => reader.lookup(ip)?.decode_path(path),
-            ReaderSource::Memory(reader) => reader.lookup(ip)?.decode_path(path),
+            ReaderSource::Mmap(reader) => {
+                let result = reader.lookup(ip).map_err(lookup_error)?;
+                lookup_result_path_to_js(env, &result, path, property_names)
+            }
+            ReaderSource::Memory(reader) => {
+                let result = reader.lookup(ip).map_err(lookup_error)?;
+                lookup_result_path_to_js(env, &result, path, property_names)
+            }
         }
     }
 
@@ -255,7 +263,7 @@ impl NativeReader {
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        lookup_to_js(env, reader.lookup_path(ip, &path_elements))
+        reader.lookup_path_to_js(env, ip, &path_elements, &self.property_names)
     }
 
     #[napi(js_name = "compilePath")]
@@ -289,7 +297,7 @@ impl NativeReader {
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        lookup_to_js(env, reader.lookup_path(ip, &path_elements))
+        reader.lookup_path_to_js(env, ip, &path_elements, &self.property_names)
     }
 
     #[napi(js_name = "getWithPrefixLength")]
@@ -343,7 +351,7 @@ impl NativeReader {
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         let values = parsed_ips
             .into_iter()
-            .map(|ip| lookup_to_js(env, reader.lookup_path(ip, &path_elements)))
+            .map(|ip| reader.lookup_path_to_js(env, ip, &path_elements, &self.property_names))
             .collect::<Result<Vec<_>>>()?;
         Array::from_vec(env, values)?.into_unknown(env)
     }
@@ -364,7 +372,7 @@ impl NativeReader {
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         let values = parsed_ips
             .into_iter()
-            .map(|ip| lookup_to_js(env, reader.lookup_path(ip, &path_elements)))
+            .map(|ip| reader.lookup_path_to_js(env, ip, &path_elements, &self.property_names))
             .collect::<Result<Vec<_>>>()?;
         Array::from_vec(env, values)?.into_unknown(env)
     }
