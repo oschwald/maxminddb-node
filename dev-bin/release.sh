@@ -69,7 +69,7 @@ if [ "$should_push" != "y" ]; then
 fi
 
 if [ -n "$(git status --porcelain)" ]; then
-    git commit -m "Update for $tag" package.json package-lock.json Cargo.toml Cargo.lock
+    git commit -m "Update for $tag" package.json package-lock.json Cargo.toml Cargo.lock test/basic.test.js
 fi
 
 git push
