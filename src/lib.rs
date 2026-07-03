@@ -95,8 +95,8 @@ impl ReaderSource {
 
     fn metadata(&self) -> &maxminddb::Metadata {
         match self {
-            ReaderSource::Mmap(reader) => &reader.metadata,
-            ReaderSource::Memory(reader) => &reader.metadata,
+            ReaderSource::Mmap(reader) => reader.metadata(),
+            ReaderSource::Memory(reader) => reader.metadata(),
         }
     }
 
