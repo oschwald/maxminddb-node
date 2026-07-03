@@ -41,6 +41,7 @@ fi
 cargo_version="$(perl -ne 'if (/^version = "([^"]+)"/) { print $1; exit }' Cargo.toml)"
 if [[ "$cargo_version" != "$version" ]]; then
     perl -pi -e "s/(?<=^version = \").+?(?=\")/$version/gsm" Cargo.toml
+    perl -pi -e "s/(?<=maxmind\.nativeVersion\(\), ').+?(?=')/$version/gsm" test/basic.test.js
 fi
 
 echo $"Test results:"
