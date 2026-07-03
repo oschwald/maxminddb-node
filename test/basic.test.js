@@ -15,7 +15,7 @@ const dataDir = path.join(
 );
 
 test('loads native binding', () => {
-  assert.equal(maxmind.nativeVersion(), '0.1.0');
+  assert.equal(maxmind.nativeVersion(), '0.2.1');
 });
 
 test('validates IP addresses', () => {
