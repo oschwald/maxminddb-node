@@ -186,6 +186,11 @@ test('paginates networks within a CIDR', async () => {
   const secondPage = iterator.nextPage();
   assert.deepEqual(secondPage, records.slice(1, 2));
 
+  assert.deepEqual(
+    reader.within('81.2.69.0/24').nextPage(0xffffffff),
+    records
+  );
+
   assert.throws(
     () => reader.within('81.2.69.0/24', { pageSize: 0 }),
     /positive 32-bit integer/

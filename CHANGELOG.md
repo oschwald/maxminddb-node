@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Decoded path lookup results directly into JavaScript values to reduce
   intermediate allocations for `getPath()`, `getManyPath()`, and compiled path
   lookups.
+- Decoded network iteration records directly into JavaScript values to reduce
+  intermediate allocations for `networks()`, `within()`, and paginated network
+  iteration.
 
 ## [0.1.0] - 2026-06-14
 

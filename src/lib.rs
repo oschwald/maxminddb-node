@@ -13,8 +13,8 @@ use crate::{
     ip::{parse_ip, parse_network, prefix_len_for_lookup},
     metadata::metadata_to_js,
     networks::{
-        collect_networks_for_reader, collect_next_networks_page, make_within_options,
-        network_records_to_js, NetworkIter, NetworkRecord,
+        collect_networks_for_reader_to_js, collect_next_networks_page_to_js, make_within_options,
+        NetworkIter,
     },
     paths::{compiled_path, parse_path, path_elements_from_owned, OwnedPathElement},
 };
@@ -120,14 +120,20 @@ impl ReaderSource {
         }
     }
 
-    fn collect_networks(
+    fn collect_networks_to_js<'env>(
         &self,
+        env: &'env Env,
         cidr: Option<ipnetwork::IpNetwork>,
         options: WithinOptions,
-    ) -> std::result::Result<Vec<NetworkRecord<'_>>, MaxMindDbError> {
+        property_names: &RefCell<PropertyNameCache>,
+    ) -> Result<Unknown<'env>> {
         match self {
-            ReaderSource::Mmap(reader) => collect_networks_for_reader(reader, cidr, options),
-            ReaderSource::Memory(reader) => collect_networks_for_reader(reader, cidr, options),
+            ReaderSource::Mmap(reader) => {
+                collect_networks_for_reader_to_js(env, reader, cidr, options, property_names)
+            }
+            ReaderSource::Memory(reader) => {
+                collect_networks_for_reader_to_js(env, reader, cidr, options, property_names)
+            }
         }
     }
 
@@ -155,6 +161,7 @@ pub struct NativeReader {
 #[napi(js_name = "NativeNetworkCursor")]
 pub struct NativeNetworkCursor {
     iter: Option<NetworkCursorCell>,
+    property_names: RefCell<PropertyNameCache>,
 }
 
 impl Drop for NativeNetworkCursor {
@@ -172,13 +179,11 @@ impl NativeNetworkCursor {
         }
 
         let Some(iter) = self.iter.as_mut() else {
-            return network_records_to_js(env, Vec::new());
+            return Array::from_vec(env, Vec::<Unknown<'env>>::new())?.into_unknown(env);
         };
-        let records = iter
-            .with_dependent_mut(|_reader, iter| collect_next_networks_page(iter, limit as usize))
-            .map_err(lookup_error)?;
-        let is_empty = records.is_empty();
-        let page = network_records_to_js(env, records)?;
+        let (page, is_empty) = iter.with_dependent_mut(|_reader, iter| {
+            collect_next_networks_page_to_js(env, iter, limit as usize, &self.property_names)
+        })?;
         if is_empty {
             self.iter = None;
         }
@@ -396,10 +401,7 @@ impl NativeReader {
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        let records = reader
-            .collect_networks(cidr, options)
-            .map_err(lookup_error)?;
-        network_records_to_js(env, records)
+        reader.collect_networks_to_js(env, cidr, options, &self.property_names)
     }
 
     #[napi(js_name = "networkCursor")]
@@ -423,7 +425,10 @@ impl NativeReader {
         );
         let iter = NetworkCursorCell::try_new(reader, |reader| reader.network_iter(cidr, options))
             .map_err(lookup_error)?;
-        Ok(NativeNetworkCursor { iter: Some(iter) })
+        Ok(NativeNetworkCursor {
+            iter: Some(iter),
+            property_names: RefCell::new(PropertyNameCache::new()),
+        })
     }
 
     #[napi]
