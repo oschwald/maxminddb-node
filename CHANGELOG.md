@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Updated the Rust `maxminddb` dependency to 0.29.0 and refreshed Rust and npm
   development dependencies.
+- Coalesced watched file reload events so bursts trigger fewer duplicate reloads
+  and hook calls while preserving serialized reloads.
 
 ### Performance
 
