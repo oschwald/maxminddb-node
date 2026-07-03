@@ -33,6 +33,18 @@ enum ReaderSource {
     Memory(MaxMindReader<Vec<u8>>),
 }
 
+// The network iterator borrows from its reader. Keep the Arc-owned reader and
+// the borrowing iterator together so cursor snapshots remain valid after the
+// parent reader reloads or closes.
+self_cell::self_cell!(
+    struct NetworkCursorCell {
+        owner: Arc<ReaderSource>,
+
+        #[covariant]
+        dependent: NetworkIter,
+    }
+);
+
 impl ReaderSource {
     fn lookup_record_to_js<'env>(
         &self,
@@ -134,8 +146,7 @@ pub struct NativeReader {
 
 #[napi(js_name = "NativeNetworkCursor")]
 pub struct NativeNetworkCursor {
-    iter: Option<NetworkIter<'static>>,
-    _reader: Arc<ReaderSource>,
+    iter: Option<NetworkCursorCell>,
 }
 
 impl Drop for NativeNetworkCursor {
@@ -155,11 +166,15 @@ impl NativeNetworkCursor {
         let Some(iter) = self.iter.as_mut() else {
             return network_records_to_js(env, Vec::new());
         };
-        let records = collect_next_networks_page(iter, limit as usize).map_err(lookup_error)?;
-        if records.is_empty() {
+        let records = iter
+            .with_dependent_mut(|_reader, iter| collect_next_networks_page(iter, limit as usize))
+            .map_err(lookup_error)?;
+        let is_empty = records.is_empty();
+        let page = network_records_to_js(env, records)?;
+        if is_empty {
             self.iter = None;
         }
-        network_records_to_js(env, records)
+        Ok(page)
     }
 
     #[napi]
@@ -398,25 +413,9 @@ impl NativeReader {
                 .as_ref()
                 .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?,
         );
-        let iter = {
-            // SAFETY: The iterator borrows from the ReaderSource stored in `reader`.
-            // NativeNetworkCursor owns an Arc clone of that ReaderSource and drops
-            // the iterator before releasing the Arc, so the borrowed reader remains
-            // alive for the full iterator lifetime even if the parent Reader reloads
-            // or closes.
-            unsafe {
-                let reader_ref: &ReaderSource = &*(Arc::as_ptr(&reader));
-                std::mem::transmute::<NetworkIter<'_>, NetworkIter<'static>>(
-                    reader_ref
-                        .network_iter(cidr, options)
-                        .map_err(lookup_error)?,
-                )
-            }
-        };
-        Ok(NativeNetworkCursor {
-            iter: Some(iter),
-            _reader: reader,
-        })
+        let iter = NetworkCursorCell::try_new(reader, |reader| reader.network_iter(cidr, options))
+            .map_err(lookup_error)?;
+        Ok(NativeNetworkCursor { iter: Some(iter) })
     }
 
     #[napi]
