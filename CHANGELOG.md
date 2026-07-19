@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and constructing batch result arrays in place.
 - Reuse records with shared data offsets within cached network cursor pages,
   avoiding repeated decoding during large network walks.
+- Format network strings on the stack and construct network-result pairs in
+  place, avoiding two heap allocations per iterated network.
 
 ## [0.2.1] - 2026-07-03
 

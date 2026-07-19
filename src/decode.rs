@@ -533,6 +533,11 @@ fn raw_string_bytes(env: sys::napi_env, bytes: &[u8]) -> Result<RawJsValue> {
     raw_js_string_bytes(env, bytes).map(RawJsValue)
 }
 
+pub(crate) fn string_bytes_to_js<'env>(env: &'env Env, bytes: &[u8]) -> Result<Unknown<'env>> {
+    raw_js_string_bytes(env.raw(), bytes)
+        .map(|value| unsafe { Unknown::from_raw_unchecked(env.raw(), value) })
+}
+
 fn raw_js_string_bytes(env: sys::napi_env, bytes: &[u8]) -> Result<sys::napi_value> {
     let mut value = ptr::null_mut();
     if bytes.is_ascii() {

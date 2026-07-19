@@ -1,6 +1,9 @@
 use crate::{
-    cache::PropertyNameCache, decode::lookup_result_record_uncached_to_js, errors::lookup_error,
+    cache::PropertyNameCache,
+    decode::{lookup_result_record_uncached_to_js, string_bytes_to_js},
+    errors::{lookup_error, napi_error},
 };
+use arrayvec::ArrayString;
 use maxminddb::{
     LookupResult, MaxMindDbError, Mmap, Reader as MaxMindReader, Within, WithinOptions,
 };
@@ -8,7 +11,7 @@ use napi::{
     bindgen_prelude::{Array, Env, ToNapiValue, Unknown},
     Result,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Write};
 
 const MAX_INITIAL_NETWORK_PAGE_CAPACITY: usize = 1024;
 
@@ -93,11 +96,11 @@ fn network_lookup_to_js<'env, 'de, S: AsRef<[u8]>>(
     records_by_offset: &mut Option<HashMap<usize, Unknown<'env>>>,
 ) -> Result<Unknown<'env>> {
     let lookup = result.map_err(lookup_error)?;
-    let network = lookup
-        .network()
-        .map_err(lookup_error)?
-        .to_string()
-        .into_unknown(env)?;
+    let network = lookup.network().map_err(lookup_error)?;
+    let mut network_string = ArrayString::<64>::new();
+    write!(&mut network_string, "{network}")
+        .map_err(|_| napi_error("network string exceeds expected length"))?;
+    let network = string_bytes_to_js(env, network_string.as_bytes())?;
     let record = if let (Some(records_by_offset), Some(offset)) =
         (records_by_offset.as_mut(), lookup.offset())
     {
@@ -111,7 +114,10 @@ fn network_lookup_to_js<'env, 'de, S: AsRef<[u8]>>(
     } else {
         lookup_result_record_uncached_to_js(env, &lookup, property_names)?
     };
-    Array::from_vec(env, vec![network, record])?.into_unknown(env)
+    let mut pair = env.create_array(2)?;
+    pair.set(0, network)?;
+    pair.set(1, record)?;
+    pair.into_unknown(env)
 }
 
 pub(crate) fn collect_next_networks_page_to_js<'env, 'de>(
