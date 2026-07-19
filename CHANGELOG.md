@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   place, avoiding two heap allocations per iterated network.
 - Construct decoded arrays and objects in a single pass and carry JavaScript
   decode context through nested values, reducing allocations and TLS access.
+- Use a protected LRU segment for caches up to 10,000 records, retaining
+  frequently reused records during broad scans without increasing capacity.
 
 ## [0.2.1] - 2026-07-03
 
