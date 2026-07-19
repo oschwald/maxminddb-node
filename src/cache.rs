@@ -20,7 +20,7 @@ pub(crate) struct RecordCache {
 }
 
 pub(crate) struct PropertyNameCache {
-    values: HashMap<String, CString>,
+    values: HashMap<Vec<u8>, CString>,
 }
 
 impl PropertyNameCache {
@@ -30,14 +30,14 @@ impl PropertyNameCache {
         }
     }
 
-    pub(crate) fn get(&mut self, name: &str) -> Option<*const c_char> {
+    pub(crate) fn get(&mut self, name: &[u8]) -> Option<*const c_char> {
         if let Some(reference) = self.values.get(name) {
             return Some(reference.as_ptr());
         }
 
         let reference = CString::new(name).ok()?;
         let pointer = reference.as_ptr();
-        self.values.insert(name.to_owned(), reference);
+        self.values.insert(name.to_vec(), reference);
         Some(pointer)
     }
 

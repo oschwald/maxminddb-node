@@ -63,7 +63,10 @@ impl<'de> Deserialize<'de> for RawJsValue {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_any(RawJsValueVisitor)
+        // Node owns the UTF-8-to-JavaScript conversion and uses replacement
+        // characters for malformed sequences. Ask maxminddb for the original
+        // bytes so valid strings are not decoded once by Rust and again by V8.
+        maxminddb::deserialize_any_with_raw_strings(deserializer, RawJsValueVisitor)
     }
 }
 
@@ -219,6 +222,13 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
         RawJsValue::deserialize(deserializer)
     }
 
+    fn visit_newtype_struct<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_bytes(RawJsStringVisitor)
+    }
+
     fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
     where
         A: SeqAccess<'de>,
@@ -237,11 +247,108 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     {
         let env = js_decode_env()?;
         let mut values = Vec::with_capacity(map.size_hint().unwrap_or(0));
-        while let Some(key) = map.next_key::<Cow<'de, str>>()? {
+        while let Some(key) = map.next_key_seed(RawJsPropertyNameSeed)? {
             let value = map.next_value_seed(RawJsValueSeed)?;
             values.push((key, value));
         }
         napi_result_to_de(raw_object_entries(env, values))
+    }
+}
+
+struct RawJsStringVisitor;
+
+impl<'de> Visitor<'de> for RawJsStringVisitor {
+    type Value = RawJsValue;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("raw MaxMind DB string bytes")
+    }
+
+    fn visit_bytes<E>(self, value: &[u8]) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        let env = js_decode_env()?;
+        napi_result_to_de(raw_string_bytes(env, value))
+    }
+
+    fn visit_borrowed_bytes<E>(self, value: &'de [u8]) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.visit_bytes(value)
+    }
+
+    fn visit_byte_buf<E>(self, value: Vec<u8>) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.visit_bytes(&value)
+    }
+}
+
+struct RawJsPropertyNameSeed;
+
+impl<'de> DeserializeSeed<'de> for RawJsPropertyNameSeed {
+    type Value = Cow<'de, [u8]>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_identifier(RawJsPropertyNameVisitor)
+    }
+}
+
+struct RawJsPropertyNameVisitor;
+
+impl<'de> Visitor<'de> for RawJsPropertyNameVisitor {
+    type Value = Cow<'de, [u8]>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("raw MaxMind DB map-key bytes")
+    }
+
+    fn visit_bytes<E>(self, value: &[u8]) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Cow::Owned(value.to_vec()))
+    }
+
+    fn visit_borrowed_bytes<E>(self, value: &'de [u8]) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Cow::Borrowed(value))
+    }
+
+    fn visit_byte_buf<E>(self, value: Vec<u8>) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Cow::Owned(value))
+    }
+
+    fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Cow::Owned(value.as_bytes().to_vec()))
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Cow::Borrowed(value.as_bytes()))
+    }
+
+    fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Cow::Owned(value.into_bytes()))
     }
 }
 
@@ -419,14 +526,22 @@ fn raw_string(env: sys::napi_env, string_value: &str) -> Result<RawJsValue> {
 }
 
 fn raw_js_string(env: sys::napi_env, string_value: &str) -> Result<sys::napi_value> {
+    raw_js_string_bytes(env, string_value.as_bytes())
+}
+
+fn raw_string_bytes(env: sys::napi_env, bytes: &[u8]) -> Result<RawJsValue> {
+    raw_js_string_bytes(env, bytes).map(RawJsValue)
+}
+
+fn raw_js_string_bytes(env: sys::napi_env, bytes: &[u8]) -> Result<sys::napi_value> {
     let mut value = ptr::null_mut();
-    if string_value.is_ascii() {
+    if bytes.is_ascii() {
         check_status!(
             unsafe {
                 sys::napi_create_string_latin1(
                     env,
-                    string_value.as_ptr().cast(),
-                    string_value.len() as isize,
+                    bytes.as_ptr().cast(),
+                    bytes.len() as isize,
                     &mut value,
                 )
             },
@@ -437,8 +552,8 @@ fn raw_js_string(env: sys::napi_env, string_value: &str) -> Result<sys::napi_val
             unsafe {
                 sys::napi_create_string_utf8(
                     env,
-                    string_value.as_ptr().cast(),
-                    string_value.len() as isize,
+                    bytes.as_ptr().cast(),
+                    bytes.len() as isize,
                     &mut value,
                 )
             },
@@ -450,11 +565,11 @@ fn raw_js_string(env: sys::napi_env, string_value: &str) -> Result<sys::napi_val
 
 fn raw_property_descriptor_name(
     env: sys::napi_env,
-    property_name: &str,
+    property_name: &[u8],
 ) -> Result<(*const c_char, sys::napi_value)> {
     let cache = JS_PROPERTY_NAME_CACHE.with(Cell::get);
     if cache.is_null() {
-        return raw_js_string(env, property_name).map(|name| (ptr::null(), name));
+        return raw_js_string_bytes(env, property_name).map(|name| (ptr::null(), name));
     }
 
     if let Some(utf8name) = unsafe { &*cache }
@@ -465,7 +580,7 @@ fn raw_property_descriptor_name(
         return Ok((utf8name, ptr::null_mut()));
     }
 
-    raw_js_string(env, property_name).map(|name| (ptr::null(), name))
+    raw_js_string_bytes(env, property_name).map(|name| (ptr::null(), name))
 }
 
 fn raw_buffer(env: sys::napi_env, bytes: &[u8]) -> Result<RawJsValue> {
@@ -505,7 +620,7 @@ fn raw_array(env: sys::napi_env, values: Vec<RawJsValue>) -> Result<RawJsValue> 
 
 fn raw_object_entries(
     env: sys::napi_env,
-    values: Vec<(Cow<'_, str>, RawJsValue)>,
+    values: Vec<(Cow<'_, [u8]>, RawJsValue)>,
 ) -> Result<RawJsValue> {
     let mut object = ptr::null_mut();
     check_status!(
@@ -515,8 +630,7 @@ fn raw_object_entries(
 
     let mut descriptors = Vec::with_capacity(values.len());
     for (key, value) in values {
-        let key = key.as_ref();
-        let (utf8name, name) = raw_property_descriptor_name(env, key)?;
+        let (utf8name, name) = raw_property_descriptor_name(env, key.as_ref())?;
         descriptors.push(sys::napi_property_descriptor {
             utf8name,
             name,

@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Updated the Rust `maxminddb` dependency to 0.30.0, inheriting safer corrupt
   database traversal and faster path and record decoding.
+- Invalid UTF-8 in decoded MMDB string values and map keys now follows Node's
+  native conversion behavior and is represented with replacement characters.
+
+### Performance
+
+- Decode MMDB strings and map keys directly from raw bytes into JavaScript
+  strings, avoiding redundant UTF-8 decoding in Rust and Node.
 
 ## [0.2.1] - 2026-07-03
 

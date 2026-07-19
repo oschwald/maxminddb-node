@@ -117,3 +117,37 @@ test('decodes nested and string-only fixture records', () => {
   assert.equal(stringValues.cacheStats().size, 0);
   assert.equal(stringValues.cacheStats().inserts, 0);
 });
+
+test('uses Node replacement semantics for malformed MMDB strings', () => {
+  const source = fs.readFileSync(
+    path.join(dataDir, 'MaxMind-DB-test-decoder.mmdb')
+  );
+
+  const invalidValueDatabase = Buffer.from(source);
+  const stringOffset = invalidValueDatabase.indexOf(Buffer.from('unicode!'));
+  assert.notEqual(stringOffset, -1);
+  invalidValueDatabase[stringOffset] = 0xff;
+
+  const invalidValueReader = new maxmind.Reader(invalidValueDatabase, {
+    cache: false,
+  });
+  assert.equal(
+    invalidValueReader.get('1.1.1.1').utf8_string,
+    '�nicode! ☯ - ♫'
+  );
+  assert.equal(
+    invalidValueReader.getPath('1.1.1.1', ['utf8_string']),
+    '�nicode! ☯ - ♫'
+  );
+
+  const invalidKeyDatabase = Buffer.from(source);
+  const keyOffset = invalidKeyDatabase.indexOf(Buffer.from('utf8_string'));
+  assert.notEqual(keyOffset, -1);
+  invalidKeyDatabase[keyOffset] = 0xff;
+
+  const invalidKeyRecord = new maxmind.Reader(invalidKeyDatabase, {
+    cache: false,
+  }).get('1.1.1.1');
+  assert.equal(invalidKeyRecord['�tf8_string'], 'unicode! ☯ - ♫');
+  assert.equal(invalidKeyRecord.utf8_string, undefined);
+});
