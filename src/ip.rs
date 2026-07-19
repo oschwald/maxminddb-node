@@ -94,3 +94,56 @@ pub(crate) fn prefix_len_for_lookup(ip: IpAddr, network: ipnetwork::IpNetwork) -
         network.prefix() as usize
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_ipv4, prefix_len_for_lookup};
+    use ipnetwork::IpNetwork;
+    use std::{net::IpAddr, str::FromStr};
+
+    #[test]
+    fn parses_canonical_ipv4_addresses() {
+        let mut state = 0x1234_5678_u32;
+        for _ in 0..10_000 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let expected = std::net::Ipv4Addr::from(state);
+            let text = expected.to_string();
+            assert_eq!(parse_ipv4(text.as_bytes()), Some(expected));
+        }
+    }
+
+    #[test]
+    fn rejects_noncanonical_or_invalid_ipv4_addresses() {
+        for text in [
+            "",
+            "1.2.3",
+            "1.2.3.4.5",
+            ".1.2.3",
+            "1..2.3",
+            "1.2.3.",
+            "01.2.3.4",
+            "1.02.3.4",
+            "1.2.003.4",
+            "256.2.3.4",
+            "1.2.3.999",
+            "+1.2.3.4",
+            "1.2.3.4 ",
+            "::1",
+        ] {
+            assert_eq!(parse_ipv4(text.as_bytes()), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn adjusts_ipv4_prefixes_from_ipv6_database_networks() {
+        let ipv4 = IpAddr::from_str("81.2.69.142").unwrap();
+        let mapped_network = IpNetwork::from_str("::ffff:81.2.69.0/120").unwrap();
+        let native_network = IpNetwork::from_str("81.2.69.0/24").unwrap();
+        let ipv6 = IpAddr::from_str("2001:db8::1").unwrap();
+        let ipv6_network = IpNetwork::from_str("2001:db8::/48").unwrap();
+
+        assert_eq!(prefix_len_for_lookup(ipv4, mapped_network), 24);
+        assert_eq!(prefix_len_for_lookup(ipv4, native_network), 24);
+        assert_eq!(prefix_len_for_lookup(ipv6, ipv6_network), 48);
+    }
+}

@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Return native network pages directly when no buffered records remain,
   avoiding an extra JavaScript array allocation and copy per page.
 
+### Development
+
+- Added focused unit coverage for the custom IPv4 parser, IPv4 prefix
+  translation, signed path indexes, and inline path storage boundary.
+
 ## [0.2.1] - 2026-07-03
 
 * Test fix. No other changes.

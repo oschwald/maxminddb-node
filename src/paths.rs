@@ -74,3 +74,54 @@ pub(crate) fn compiled_path(
         .map(Vec::as_slice)
         .ok_or_else(|| invalid_arg(format!("Invalid compiled path id: {path_id}")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        path_elements_from_owned, signed_index_to_path_element, OwnedPathElement, PathElements,
+        INLINE_PATH_ELEMENTS,
+    };
+
+    #[test]
+    fn maps_signed_indexes_without_overflow() {
+        assert!(matches!(
+            signed_index_to_path_element(0),
+            OwnedPathElement::Index(0)
+        ));
+        assert!(matches!(
+            signed_index_to_path_element(i64::MAX),
+            OwnedPathElement::Index(index) if index == i64::MAX as usize
+        ));
+        assert!(matches!(
+            signed_index_to_path_element(-1),
+            OwnedPathElement::IndexFromEnd(0)
+        ));
+        assert!(matches!(
+            signed_index_to_path_element(-2),
+            OwnedPathElement::IndexFromEnd(1)
+        ));
+        assert!(matches!(
+            signed_index_to_path_element(i64::MIN),
+            OwnedPathElement::IndexFromEnd(usize::MAX)
+        ));
+    }
+
+    #[test]
+    fn stores_only_common_paths_inline() {
+        let inline = (0..INLINE_PATH_ELEMENTS)
+            .map(OwnedPathElement::Index)
+            .collect::<Vec<_>>();
+        let heap = (0..=INLINE_PATH_ELEMENTS)
+            .map(OwnedPathElement::Index)
+            .collect::<Vec<_>>();
+
+        assert!(matches!(
+            path_elements_from_owned(&inline),
+            PathElements::Inline(_)
+        ));
+        assert!(matches!(
+            path_elements_from_owned(&heap),
+            PathElements::Heap(_)
+        ));
+    }
+}
