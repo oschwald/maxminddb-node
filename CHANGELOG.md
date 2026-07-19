@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database traversal and faster path and record decoding.
 - Invalid UTF-8 in decoded MMDB string values and map keys now follows Node's
   native conversion behavior and is represented with replacement characters.
+- `MODE_BUFFER` now uses the same native owned-memory reader as `MODE_MEMORY`;
+  the constant remains available as a compatibility alias.
 
 ### Performance
 
@@ -33,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decode context through nested values, reducing allocations and TLS access.
 - Use a protected LRU segment for caches up to 10,000 records, retaining
   frequently reused records during broad scans without increasing capacity.
+- Open owned-memory file modes on a worker thread and read directly into Rust
+  memory, avoiding a full intermediate Node `Buffer` and event-loop blocking.
 
 ## [0.2.1] - 2026-07-03
 

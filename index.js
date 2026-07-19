@@ -55,11 +55,6 @@ function loadNativeBinding() {
 
 const native = loadNativeBinding();
 
-const DEFAULT_LARGE_FILE_THRESHOLD = 512 * 1024 * 1024;
-const LARGE_FILE_THRESHOLD = normalizeLargeFileThreshold(
-  process.env.MAXMINDDB_LARGE_FILE_THRESHOLD_BYTES
-);
-const STREAM_WATERMARK = 8 * 1024 * 1024;
 const DEFAULT_CACHE_MAX = 10_000;
 const MAX_CACHE_MAX = 0xffffffff;
 const legacyErrorMessage = `Maxmind v2 module has changed API.
@@ -73,17 +68,6 @@ const MODE_AUTO = 'auto';
 const MODE_MMAP = 'mmap';
 const MODE_MEMORY = 'memory';
 const MODE_BUFFER = 'buffer';
-
-function normalizeLargeFileThreshold(value) {
-  if (value == null || value === '') {
-    return DEFAULT_LARGE_FILE_THRESHOLD;
-  }
-
-  const threshold = Number(value);
-  return Number.isSafeInteger(threshold) && threshold >= 0
-    ? threshold
-    : DEFAULT_LARGE_FILE_THRESHOLD;
-}
 
 function isGzipBuffer(buffer) {
   return buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b;
@@ -176,63 +160,6 @@ function waitForFile(filepath) {
     };
     retry();
   });
-}
-
-async function readLargeFile(filepath, size) {
-  return new Promise((resolve, reject) => {
-    const buffer = Buffer.allocUnsafe(size);
-    let offset = 0;
-    let settled = false;
-    const stream = fs.createReadStream(filepath, {
-      highWaterMark: STREAM_WATERMARK,
-    });
-
-    const finish = (error, value) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (error) {
-        stream.destroy();
-        reject(error);
-      } else {
-        resolve(value);
-      }
-    };
-
-    stream.on('data', (chunk) => {
-      const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      if (offset + bufferChunk.length > size) {
-        finish(
-          new Error(
-            `File changed while reading ${filepath}: expected ${size} bytes but read more`
-          )
-        );
-        return;
-      }
-      bufferChunk.copy(buffer, offset);
-      offset += bufferChunk.length;
-    });
-    stream.on('end', () => {
-      if (offset !== size) {
-        finish(
-          new Error(
-            `File changed while reading ${filepath}: expected ${size} bytes but read ${offset}`
-          )
-        );
-        return;
-      }
-      finish(null, buffer);
-    });
-    stream.on('error', (error) => finish(error));
-  });
-}
-
-async function readFile(filepath) {
-  const stat = await fs.promises.stat(filepath);
-  return stat.size < LARGE_FILE_THRESHOLD
-    ? fs.promises.readFile(filepath)
-    : readLargeFile(filepath, stat.size);
 }
 
 class PathLookup {
@@ -350,6 +277,24 @@ class Reader {
 
   static open(filepath, options = {}) {
     const mode = normalizeMode(options.mode);
+    return Reader._fromNative(
+      filepath,
+      mode,
+      options,
+      native.openReader(filepath, mode, normalizeCacheCapacity(options))
+    );
+  }
+
+  static async openOwned(filepath, mode, options = {}) {
+    return Reader._fromNative(
+      filepath,
+      mode,
+      options,
+      await native.openReaderAsync(filepath, normalizeCacheCapacity(options))
+    );
+  }
+
+  static _fromNative(filepath, mode, options, nativeReader) {
     const reader = Object.create(Reader.prototype);
     reader._mode = mode;
     reader._filepath = filepath;
@@ -360,7 +305,7 @@ class Reader {
     reader._watchReloadPromise = Promise.resolve();
     reader._lastReloadError = null;
     reader._cacheCapacity = normalizeCacheCapacity(options);
-    reader._reader = native.openReader(filepath, mode, reader._cacheCapacity);
+    reader._reader = nativeReader;
     reader.metadata = normalizeMetadata(reader._reader.metadata());
     reader.options = options;
     return reader;
@@ -445,12 +390,21 @@ class Reader {
     }
 
     try {
-      if (mode === MODE_BUFFER) {
-        const database = await readFile(filepath);
+      if (mode === MODE_MEMORY || mode === MODE_BUFFER) {
+        const replacement = await native.openReaderAsync(
+          filepath,
+          this._cacheCapacity
+        );
         if (this.closed || this._watchFilepath !== filepath) {
+          replacement.close();
           return;
         }
-        this.load(database);
+        const metadata = normalizeMetadata(replacement.metadata());
+        const previous = this._reader;
+        this._reader = replacement;
+        this.metadata = metadata;
+        this._lastReloadError = null;
+        previous.close();
       } else {
         this.reload();
       }
@@ -526,8 +480,8 @@ async function open(filepath, opts, cb) {
 
   const mode = normalizeMode(options.mode);
   const reader =
-    mode === MODE_BUFFER
-      ? new Reader(await readFile(filepath), options)
+    mode === MODE_MEMORY || mode === MODE_BUFFER
+      ? await Reader.openOwned(filepath, mode, options)
       : Reader.open(filepath, options);
 
   if (options.watchForUpdates) {

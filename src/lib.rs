@@ -20,8 +20,10 @@ use crate::{
 };
 use maxminddb::{MaxMindDbError, Mmap, Reader as MaxMindReader, WithinOptions};
 use napi::{
-    bindgen_prelude::{Array, Buffer, Either, Env, Object, ObjectFinalize, ToNapiValue, Unknown},
-    JsString, Result,
+    bindgen_prelude::{
+        Array, AsyncTask, Buffer, Either, Env, Object, ObjectFinalize, ToNapiValue, Unknown,
+    },
+    JsString, Result, Task,
 };
 use napi_derive::napi;
 use std::{cell::RefCell, net::IpAddr, num::NonZeroUsize, path::Path, sync::Arc};
@@ -31,6 +33,27 @@ const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
 enum ReaderSource {
     Mmap(MaxMindReader<Mmap>),
     Memory(MaxMindReader<Vec<u8>>),
+}
+
+pub struct OpenReaderTask {
+    path: String,
+    cache_capacity: Option<u32>,
+}
+
+impl Task for OpenReaderTask {
+    type Output = MaxMindReader<Vec<u8>>;
+    type JsValue = NativeReader;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        MaxMindReader::open_readfile(Path::new(&self.path)).map_err(open_error)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(create_reader(
+            ReaderSource::Memory(output),
+            self.cache_capacity,
+        ))
+    }
 }
 
 // The network iterator borrows from its reader. Keep the Arc-owned reader and
@@ -538,6 +561,14 @@ pub fn open_reader(
     cache_capacity: Option<u32>,
 ) -> Result<NativeReader> {
     open_source(&path, mode.as_deref()).map(|source| create_reader(source, cache_capacity))
+}
+
+#[napi(js_name = "openReaderAsync")]
+pub fn open_reader_async(path: String, cache_capacity: Option<u32>) -> AsyncTask<OpenReaderTask> {
+    AsyncTask::new(OpenReaderTask {
+        path,
+        cache_capacity,
+    })
 }
 
 #[napi(js_name = "nativeVersion")]

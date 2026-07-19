@@ -2,7 +2,6 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -328,44 +327,23 @@ test('rejects gzip files in open', async () => {
   );
 });
 
-test('rejects truncated large-file stream reads', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
-  const dbPath = path.join(dir, 'db.mmdb');
-  fs.writeFileSync(dbPath, Buffer.from([0, 1, 2, 3]));
-
-  const script = `
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const { Readable } = require('node:stream');
-const originalCreateReadStream = fs.createReadStream;
-fs.createReadStream = (filepath, options) => {
-  if (filepath === ${JSON.stringify(dbPath)}) {
-    return Readable.from([Buffer.from([0, 1])]);
+test('opens owned-memory modes without Node-side file reads', async () => {
+  const originalReadFile = fs.promises.readFile;
+  fs.promises.readFile = async () => {
+    throw new Error('unexpected Node-side file read');
+  };
+  try {
+    for (const mode of [maxmind.MODE_MEMORY, maxmind.MODE_BUFFER]) {
+      const reader = await maxmind.open(
+        path.join(dataDir, 'GeoIP2-City-Test.mmdb'),
+        { mode }
+      );
+      assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
+      reader.close();
+    }
+  } finally {
+    fs.promises.readFile = originalReadFile;
   }
-  return originalCreateReadStream(filepath, options);
-};
-const maxmind = require('.');
-(async () => {
-  await assert.rejects(
-    () => maxmind.open(${JSON.stringify(dbPath)}, { mode: maxmind.MODE_BUFFER }),
-    /File changed while reading/
-  );
-})().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
-`;
-
-  const result = childProcess.spawnSync(process.execPath, ['-e', script], {
-    cwd: path.join(__dirname, '..'),
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      MAXMINDDB_LARGE_FILE_THRESHOLD_BYTES: '1',
-    },
-  });
-
-  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
 test('unwatches database files on close', async () => {
@@ -450,25 +428,24 @@ test('records and clears watched reload failures', async () => {
 test('coalesces and serializes watched buffer reloads', async () => {
   const originalWatchFile = fs.watchFile;
   const originalUnwatchFile = fs.unwatchFile;
-  const originalReadFile = fs.promises.readFile;
   const watched = [];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
   const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
   const dbPath = path.join(dir, 'GeoIP2-City-Test.mmdb');
-  let activeReads = 0;
-  let maxActiveReads = 0;
+  let activeReloads = 0;
+  let maxActiveReloads = 0;
   let hookCalls = 0;
   fs.copyFileSync(sourcePath, dbPath);
 
-  const waitForActiveRead = async () => {
+  const waitForActiveReload = async () => {
     const deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
-      if (activeReads > 0) {
+      if (activeReloads > 0) {
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    throw new Error('timed out waiting for active watched reload read');
+    throw new Error('timed out waiting for active watched reload');
   };
 
   fs.watchFile = (filepath, options, listener) => {
@@ -485,27 +462,25 @@ test('coalesces and serializes watched buffer reloads', async () => {
       },
     });
 
-    fs.promises.readFile = async (...args) => {
-      if (args[0] !== dbPath) {
-        return originalReadFile.apply(fs.promises, args);
-      }
-      activeReads += 1;
-      maxActiveReads = Math.max(maxActiveReads, activeReads);
+    const reloadWatchedFile = reader._reloadWatchedFile.bind(reader);
+    reader._reloadWatchedFile = async (...args) => {
+      activeReloads += 1;
+      maxActiveReloads = Math.max(maxActiveReloads, activeReloads);
       await new Promise((resolve) => setTimeout(resolve, 10));
       try {
-        return await originalReadFile.apply(fs.promises, args);
+        return await reloadWatchedFile(...args);
       } finally {
-        activeReads -= 1;
+        activeReloads -= 1;
       }
     };
 
     watched[0].listener();
-    await waitForActiveRead();
+    await waitForActiveReload();
     watched[0].listener();
     watched[0].listener();
     await reader._watchReloadPromise;
 
-    assert.equal(maxActiveReads, 1);
+    assert.equal(maxActiveReloads, 1);
     assert.equal(hookCalls, 2);
 
     watched[0].listener();
@@ -517,6 +492,5 @@ test('coalesces and serializes watched buffer reloads', async () => {
   } finally {
     fs.watchFile = originalWatchFile;
     fs.unwatchFile = originalUnwatchFile;
-    fs.promises.readFile = originalReadFile;
   }
 });

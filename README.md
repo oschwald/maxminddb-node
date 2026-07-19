@@ -127,8 +127,8 @@ Path-based `open()` defaults to memory-mapped reads:
 - `MODE_MEMORY`
 - `MODE_BUFFER`
 
-Use `MODE_BUFFER` if you want `open()` to read the file into a Node `Buffer`
-before constructing the reader.
+`MODE_MEMORY` and `MODE_BUFFER` asynchronously read the file once into
+Rust-owned memory. `MODE_BUFFER` is retained as a compatibility alias.
 
 ```js
 import maxmind from '@oschwald/maxminddb';
@@ -142,11 +142,9 @@ Mode tradeoffs:
 
 - `MODE_MMAP`/`MODE_AUTO` opens quickly and keeps RSS low by mapping the
   database file. Replace database files atomically when using watched reloads.
-- `MODE_MEMORY` reads the database into Rust-owned memory. It costs more memory
-  at open time but is independent of the source file after open.
-- `MODE_BUFFER` reads the database into a Node `Buffer` before constructing the
-  native reader. Use it when you need Node-side file loading behavior or when
-  tests need to mutate a watched temporary file safely.
+- `MODE_MEMORY`/`MODE_BUFFER` asynchronously read the database into Rust-owned
+  memory. They cost more memory at open time but are independent of the source
+  file after open.
 
 ## Performance Notes
 
