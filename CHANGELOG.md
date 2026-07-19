@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path lookup.
 - Return native network pages directly when no buffered records remain,
   avoiding an extra JavaScript array allocation and copy per page.
+- Enable thin link-time optimization for release builds, reducing the native
+  binary size and allowing optimization across crate boundaries.
 
 ### Development
 

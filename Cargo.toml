@@ -21,3 +21,7 @@ serde = "1.0.228"
 
 [build-dependencies]
 napi-build = "2.3.2"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
