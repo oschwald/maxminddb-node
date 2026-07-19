@@ -10,7 +10,7 @@ use crate::{
     cache::{cache_stats_to_js, PropertyNameCache, RecordCache},
     decode::{lookup_result_path_to_js, lookup_result_record_to_js},
     errors::{invalid_arg, lookup_error, napi_error, open_error},
-    ip::{parse_ip, parse_network, prefix_len_for_lookup},
+    ip::{parse_js_ip, parse_network, prefix_len_for_lookup},
     metadata::metadata_to_js,
     networks::{
         collect_networks_for_reader_to_js, collect_next_networks_page_to_js, make_within_options,
@@ -21,7 +21,7 @@ use crate::{
 use maxminddb::{MaxMindDbError, Mmap, Reader as MaxMindReader, WithinOptions};
 use napi::{
     bindgen_prelude::{Array, Buffer, Either, Env, Object, ObjectFinalize, ToNapiValue, Unknown},
-    Result,
+    JsString, Result,
 };
 use napi_derive::napi;
 use std::{cell::RefCell, net::IpAddr, num::NonZeroUsize, path::Path, sync::Arc};
@@ -245,8 +245,8 @@ impl NativeReader {
     }
 
     #[napi]
-    pub fn get<'env>(&self, env: &'env Env, ip_address: String) -> Result<Unknown<'env>> {
-        let ip = self.parse_lookup_ip(&ip_address)?;
+    pub fn get<'env>(&self, env: &'env Env, ip_address: JsString<'env>) -> Result<Unknown<'env>> {
+        let ip = self.parse_lookup_ip(env, ip_address)?;
         let reader = self
             .reader
             .as_ref()
@@ -258,10 +258,10 @@ impl NativeReader {
     pub fn get_path<'env>(
         &self,
         env: &'env Env,
-        ip_address: String,
+        ip_address: JsString<'env>,
         path: Vec<Either<String, i64>>,
     ) -> Result<Unknown<'env>> {
-        let ip = self.parse_lookup_ip(&ip_address)?;
+        let ip = self.parse_lookup_ip(env, ip_address)?;
         let owned_path = parse_path(path)?;
         let path_elements = path_elements_from_owned(&owned_path);
         let reader = self
@@ -288,10 +288,10 @@ impl NativeReader {
     pub fn get_compiled_path<'env>(
         &self,
         env: &'env Env,
-        ip_address: String,
+        ip_address: JsString<'env>,
         path_id: u32,
     ) -> Result<Unknown<'env>> {
-        let ip = self.parse_lookup_ip(&ip_address)?;
+        let ip = self.parse_lookup_ip(env, ip_address)?;
         let paths = self
             .paths
             .try_borrow()
@@ -309,9 +309,9 @@ impl NativeReader {
     pub fn get_with_prefix_length<'env>(
         &self,
         env: &'env Env,
-        ip_address: String,
+        ip_address: JsString<'env>,
     ) -> Result<Unknown<'env>> {
-        let ip = self.parse_lookup_ip(&ip_address)?;
+        let ip = self.parse_lookup_ip(env, ip_address)?;
         let reader = self
             .reader
             .as_ref()
@@ -323,27 +323,25 @@ impl NativeReader {
     }
 
     #[napi(js_name = "getMany")]
-    pub fn get_many<'env>(&self, env: &'env Env, ips: Vec<String>) -> Result<Unknown<'env>> {
-        let parsed_ips = self.parse_lookup_ips(ips)?;
+    pub fn get_many<'env>(&self, env: &'env Env, ips: Array<'env>) -> Result<Unknown<'env>> {
+        let parsed_ips = self.parse_lookup_ips(env, &ips)?;
         let reader = self
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        let values = parsed_ips
-            .into_iter()
-            .map(|ip| reader.lookup_record_to_js(env, ip, &self.cache, &self.property_names))
-            .collect::<Result<Vec<_>>>()?;
-        Array::from_vec(env, values)?.into_unknown(env)
+        collect_lookup_results(env, parsed_ips, |ip| {
+            reader.lookup_record_to_js(env, ip, &self.cache, &self.property_names)
+        })
     }
 
     #[napi(js_name = "getManyCompiledPath")]
     pub fn get_many_compiled_path<'env>(
         &self,
         env: &'env Env,
-        ips: Vec<String>,
+        ips: Array<'env>,
         path_id: u32,
     ) -> Result<Unknown<'env>> {
-        let parsed_ips = self.parse_lookup_ips(ips)?;
+        let parsed_ips = self.parse_lookup_ips(env, &ips)?;
         let paths = self
             .paths
             .try_borrow()
@@ -354,32 +352,28 @@ impl NativeReader {
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        let values = parsed_ips
-            .into_iter()
-            .map(|ip| reader.lookup_path_to_js(env, ip, &path_elements, &self.property_names))
-            .collect::<Result<Vec<_>>>()?;
-        Array::from_vec(env, values)?.into_unknown(env)
+        collect_lookup_results(env, parsed_ips, |ip| {
+            reader.lookup_path_to_js(env, ip, &path_elements, &self.property_names)
+        })
     }
 
     #[napi(js_name = "getManyPath")]
     pub fn get_many_path<'env>(
         &self,
         env: &'env Env,
-        ips: Vec<String>,
+        ips: Array<'env>,
         path: Vec<Either<String, i64>>,
     ) -> Result<Unknown<'env>> {
-        let parsed_ips = self.parse_lookup_ips(ips)?;
+        let parsed_ips = self.parse_lookup_ips(env, &ips)?;
         let owned_path = parse_path(path)?;
         let path_elements = path_elements_from_owned(&owned_path);
         let reader = self
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        let values = parsed_ips
-            .into_iter()
-            .map(|ip| reader.lookup_path_to_js(env, ip, &path_elements, &self.property_names))
-            .collect::<Result<Vec<_>>>()?;
-        Array::from_vec(env, values)?.into_unknown(env)
+        collect_lookup_results(env, parsed_ips, |ip| {
+            reader.lookup_path_to_js(env, ip, &path_elements, &self.property_names)
+        })
     }
 
     #[napi]
@@ -453,8 +447,8 @@ impl NativeReader {
             .map_err(open_error)
     }
 
-    fn parse_lookup_ip(&self, ip_address: &str) -> Result<IpAddr> {
-        let ip = parse_ip(ip_address)?;
+    fn parse_lookup_ip(&self, env: &Env, ip_address: JsString<'_>) -> Result<IpAddr> {
+        let ip = parse_js_ip(env, ip_address)?;
         if self.ip_version == 4 && matches!(ip, IpAddr::V6(_)) {
             return Err(invalid_arg(format!(
                 "Error looking up {ip}. You attempted to look up an IPv6 address in an IPv4-only database"
@@ -463,8 +457,15 @@ impl NativeReader {
         Ok(ip)
     }
 
-    fn parse_lookup_ips(&self, ips: Vec<String>) -> Result<Vec<IpAddr>> {
-        ips.iter().map(|ip| self.parse_lookup_ip(ip)).collect()
+    fn parse_lookup_ips(&self, env: &Env, ips: &Array<'_>) -> Result<Vec<IpAddr>> {
+        (0..ips.len())
+            .map(|index| {
+                let ip = ips
+                    .get::<JsString<'_>>(index)?
+                    .ok_or_else(|| invalid_arg("missing IP address array element"))?;
+                self.parse_lookup_ip(env, ip)
+            })
+            .collect()
     }
 
     fn replace_reader(&mut self, env: &Env, new_reader: ReaderSource) -> Result<()> {
@@ -494,6 +495,19 @@ impl NativeReader {
             .clear();
         Ok(())
     }
+}
+
+fn collect_lookup_results<'env>(
+    env: &'env Env,
+    ips: Vec<IpAddr>,
+    mut lookup: impl FnMut(IpAddr) -> Result<Unknown<'env>>,
+) -> Result<Unknown<'env>> {
+    let length = u32::try_from(ips.len()).map_err(|_| invalid_arg("too many IP addresses"))?;
+    let mut values = env.create_array(length)?;
+    for (index, ip) in ips.into_iter().enumerate() {
+        values.set(index as u32, lookup(ip)?)?;
+    }
+    values.into_unknown(env)
 }
 
 impl ObjectFinalize for NativeReader {

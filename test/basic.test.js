@@ -259,6 +259,12 @@ test('rejects invalid lookup inputs', async () => {
   assert.throws(() => reader.get('not an ip'), /Invalid IP address/);
   assert.throws(() => reader.getMany(['81.2.69.142', 'not an ip']), /Invalid IP address/);
   assert.throws(
+    () => reader.get('x'.repeat(100)),
+    new RegExp(`Invalid IP address: ${'x'.repeat(100)}`)
+  );
+  assert.throws(() => reader.getMany(['81.2.69.142', 42]), /string/i);
+  assert.throws(() => reader.getMany(new Array(1)), /string/i);
+  assert.throws(
     () => reader.getPath('81.2.69.142', [null]),
     /String.*i64/
   );
