@@ -162,6 +162,7 @@ pub struct NativeReader {
 pub struct NativeNetworkCursor {
     iter: Option<NetworkCursorCell>,
     property_names: RefCell<PropertyNameCache>,
+    cache_records: bool,
 }
 
 impl Drop for NativeNetworkCursor {
@@ -182,7 +183,13 @@ impl NativeNetworkCursor {
             return Array::from_vec(env, Vec::<Unknown<'env>>::new())?.into_unknown(env);
         };
         let (page, is_empty) = iter.with_dependent_mut(|_reader, iter| {
-            collect_next_networks_page_to_js(env, iter, limit as usize, &self.property_names)
+            collect_next_networks_page_to_js(
+                env,
+                iter,
+                limit as usize,
+                &self.property_names,
+                self.cache_records,
+            )
         })?;
         if is_empty {
             self.iter = None;
@@ -422,6 +429,7 @@ impl NativeReader {
         Ok(NativeNetworkCursor {
             iter: Some(iter),
             property_names: RefCell::new(PropertyNameCache::new()),
+            cache_records: self.cache.borrow().is_some(),
         })
     }
 

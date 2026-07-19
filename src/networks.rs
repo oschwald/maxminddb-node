@@ -8,6 +8,7 @@ use napi::{
     bindgen_prelude::{Array, Env, ToNapiValue, Unknown},
     Result,
 };
+use std::collections::HashMap;
 
 const MAX_INITIAL_NETWORK_PAGE_CAPACITY: usize = 1024;
 
@@ -29,7 +30,12 @@ pub(crate) fn collect_networks_for_reader_to_js<'env, S: AsRef<[u8]>>(
     };
     let mut records = Vec::new();
     for result in iter {
-        records.push(network_lookup_to_js(env, result, property_names)?);
+        records.push(network_lookup_to_js(
+            env,
+            result,
+            property_names,
+            &mut None,
+        )?);
     }
     Array::from_vec(env, records)?.into_unknown(env)
 }
@@ -65,15 +71,16 @@ impl<'de> NetworkIter<'de> {
         &mut self,
         env: &'env Env,
         property_names: &std::cell::RefCell<PropertyNameCache>,
+        records_by_offset: &mut Option<HashMap<usize, Unknown<'env>>>,
     ) -> Result<Option<Unknown<'env>>> {
         match self {
             Self::Mmap(iter) => iter
                 .next()
-                .map(|result| network_lookup_to_js(env, result, property_names))
+                .map(|result| network_lookup_to_js(env, result, property_names, records_by_offset))
                 .transpose(),
             Self::Memory(iter) => iter
                 .next()
-                .map(|result| network_lookup_to_js(env, result, property_names))
+                .map(|result| network_lookup_to_js(env, result, property_names, records_by_offset))
                 .transpose(),
         }
     }
@@ -83,6 +90,7 @@ fn network_lookup_to_js<'env, 'de, S: AsRef<[u8]>>(
     env: &'env Env,
     result: std::result::Result<LookupResult<'de, S>, MaxMindDbError>,
     property_names: &std::cell::RefCell<PropertyNameCache>,
+    records_by_offset: &mut Option<HashMap<usize, Unknown<'env>>>,
 ) -> Result<Unknown<'env>> {
     let lookup = result.map_err(lookup_error)?;
     let network = lookup
@@ -90,7 +98,19 @@ fn network_lookup_to_js<'env, 'de, S: AsRef<[u8]>>(
         .map_err(lookup_error)?
         .to_string()
         .into_unknown(env)?;
-    let record = lookup_result_record_uncached_to_js(env, &lookup, property_names)?;
+    let record = if let (Some(records_by_offset), Some(offset)) =
+        (records_by_offset.as_mut(), lookup.offset())
+    {
+        if let Some(record) = records_by_offset.get(&offset) {
+            *record
+        } else {
+            let record = lookup_result_record_uncached_to_js(env, &lookup, property_names)?;
+            records_by_offset.insert(offset, record);
+            record
+        }
+    } else {
+        lookup_result_record_uncached_to_js(env, &lookup, property_names)?
+    };
     Array::from_vec(env, vec![network, record])?.into_unknown(env)
 }
 
@@ -99,10 +119,13 @@ pub(crate) fn collect_next_networks_page_to_js<'env, 'de>(
     iter: &mut NetworkIter<'de>,
     limit: usize,
     property_names: &std::cell::RefCell<PropertyNameCache>,
+    cache_records: bool,
 ) -> Result<(Unknown<'env>, bool)> {
     let mut records = Vec::with_capacity(limit.min(MAX_INITIAL_NETWORK_PAGE_CAPACITY));
+    let mut records_by_offset = cache_records.then(HashMap::new);
     for _ in 0..limit {
-        let Some(record) = iter.next_record_to_js(env, property_names)? else {
+        let Some(record) = iter.next_record_to_js(env, property_names, &mut records_by_offset)?
+        else {
             break;
         };
         records.push(record);

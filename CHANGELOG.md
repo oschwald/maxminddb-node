@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strings, avoiding redundant UTF-8 decoding in Rust and Node.
 - Reduced lookup and batch allocation by reading IP strings directly from V8
   and constructing batch result arrays in place.
+- Reuse records with shared data offsets within cached network cursor pages,
+  avoiding repeated decoding during large network walks.
 
 ## [0.2.1] - 2026-07-03
 

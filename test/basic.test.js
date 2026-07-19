@@ -173,6 +173,25 @@ test('iterates networks within a CIDR', async () => {
   ]);
 });
 
+test('reuses shared network records only when caching is enabled', async () => {
+  const database = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  const cached = await maxmind.open(database);
+  const cachedRecords = new Map(cached.networks());
+  assert.strictEqual(
+    cachedRecords.get('81.2.69.160/27'),
+    cachedRecords.get('81.2.69.192/28')
+  );
+  cached.close();
+
+  const uncached = await maxmind.open(database, { cache: false });
+  const uncachedRecords = new Map(uncached.networks());
+  assert.notStrictEqual(
+    uncachedRecords.get('81.2.69.160/27'),
+    uncachedRecords.get('81.2.69.192/28')
+  );
+  uncached.close();
+});
+
 test('paginates networks within a CIDR', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
   const records = [...reader.within('81.2.69.0/24')];
