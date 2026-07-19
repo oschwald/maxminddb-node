@@ -4,6 +4,8 @@ use napi::{bindgen_prelude::Either, Result};
 use std::{collections::HashMap, ops::Deref};
 
 const INLINE_PATH_ELEMENTS: usize = 8;
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+const ERR_PATH_INDEX: &str = "path indexes must be finite safe integers";
 
 pub(crate) enum OwnedPathElement {
     Key(String),
@@ -11,25 +13,28 @@ pub(crate) enum OwnedPathElement {
     IndexFromEnd(usize),
 }
 
-pub(crate) fn parse_path(path: Vec<Either<String, i64>>) -> Result<Vec<OwnedPathElement>> {
+pub(crate) fn parse_path(path: Vec<Either<String, f64>>) -> Result<Vec<OwnedPathElement>> {
     path.into_iter()
         .map(|element| match element {
             Either::A(key) => Ok(OwnedPathElement::Key(key)),
-            Either::B(index) => Ok(signed_index_to_path_element(index)),
+            Either::B(index) => number_to_path_element(index),
         })
         .collect()
 }
 
-fn signed_index_to_path_element(index: i64) -> OwnedPathElement {
-    if index >= 0 {
-        OwnedPathElement::Index(index as usize)
+fn number_to_path_element(index: f64) -> Result<OwnedPathElement> {
+    if !index.is_finite() || index.fract() != 0.0 || index.abs() > MAX_SAFE_INTEGER {
+        return Err(invalid_arg(ERR_PATH_INDEX));
+    }
+
+    if index >= 0.0 {
+        Ok(OwnedPathElement::Index(
+            usize::try_from(index as u64).unwrap_or(usize::MAX),
+        ))
     } else {
-        let index_from_end = index
-            .checked_neg()
-            .and_then(|n| n.checked_sub(1))
-            .map(|n| n as usize)
-            .unwrap_or(usize::MAX);
-        OwnedPathElement::IndexFromEnd(index_from_end)
+        Ok(OwnedPathElement::IndexFromEnd(
+            usize::try_from((-index - 1.0) as u64).unwrap_or(usize::MAX),
+        ))
     }
 }
 
@@ -78,32 +83,56 @@ pub(crate) fn compiled_path(
 #[cfg(test)]
 mod tests {
     use super::{
-        path_elements_from_owned, signed_index_to_path_element, OwnedPathElement, PathElements,
-        INLINE_PATH_ELEMENTS,
+        number_to_path_element, parse_path, path_elements_from_owned, OwnedPathElement,
+        PathElements, INLINE_PATH_ELEMENTS, MAX_SAFE_INTEGER,
     };
+    use napi::bindgen_prelude::Either;
 
     #[test]
-    fn maps_signed_indexes_without_overflow() {
+    fn maps_numeric_indexes() {
         assert!(matches!(
-            signed_index_to_path_element(0),
-            OwnedPathElement::Index(0)
+            number_to_path_element(0.0),
+            Ok(OwnedPathElement::Index(0))
         ));
         assert!(matches!(
-            signed_index_to_path_element(i64::MAX),
-            OwnedPathElement::Index(index) if index == i64::MAX as usize
+            number_to_path_element(-1.0),
+            Ok(OwnedPathElement::IndexFromEnd(0))
         ));
         assert!(matches!(
-            signed_index_to_path_element(-1),
-            OwnedPathElement::IndexFromEnd(0)
+            number_to_path_element(-2.0),
+            Ok(OwnedPathElement::IndexFromEnd(1))
+        ));
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn maps_maximum_safe_indexes() {
+        assert!(matches!(
+            number_to_path_element(MAX_SAFE_INTEGER),
+            Ok(OwnedPathElement::Index(index)) if index == MAX_SAFE_INTEGER as usize
         ));
         assert!(matches!(
-            signed_index_to_path_element(-2),
-            OwnedPathElement::IndexFromEnd(1)
+            number_to_path_element(-MAX_SAFE_INTEGER),
+            Ok(OwnedPathElement::IndexFromEnd(index))
+                if index == MAX_SAFE_INTEGER as usize - 1
         ));
-        assert!(matches!(
-            signed_index_to_path_element(i64::MIN),
-            OwnedPathElement::IndexFromEnd(usize::MAX)
-        ));
+    }
+
+    #[test]
+    fn rejects_invalid_numeric_indexes() {
+        for index in [
+            1.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            MAX_SAFE_INTEGER + 1.0,
+            -MAX_SAFE_INTEGER - 1.0,
+        ] {
+            let err = parse_path(vec![Either::B(index)])
+                .err()
+                .expect("invalid numeric path index should fail");
+            assert!(err.reason.contains("finite safe integers"));
+        }
     }
 
     #[test]

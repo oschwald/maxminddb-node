@@ -364,8 +364,33 @@ test('rejects invalid lookup inputs', async () => {
   assert.throws(() => reader.getMany(new Array(1)), /string/i);
   assert.throws(
     () => reader.getPath('81.2.69.142', [null]),
-    /String.*i64/
+    /String.*f64/
   );
+  assert.equal(
+    reader.getPath('81.2.69.142', ['subdivisions', Number.MAX_SAFE_INTEGER]),
+    null
+  );
+  assert.equal(
+    reader.getPath('81.2.69.142', ['subdivisions', Number.MIN_SAFE_INTEGER]),
+    null
+  );
+  for (const index of [
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+    Number.MIN_SAFE_INTEGER - 1,
+  ]) {
+    assert.throws(
+      () => reader.getPath('81.2.69.142', ['subdivisions', index]),
+      /path indexes must be finite safe integers/
+    );
+    assert.throws(
+      () => reader.path(['subdivisions', index]),
+      /path indexes must be finite safe integers/
+    );
+  }
   assert.throws(
     () => reader._reader.getCompiledPath('81.2.69.142', 999),
     /Invalid compiled path id: 999/

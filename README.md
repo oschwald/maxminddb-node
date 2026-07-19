@@ -112,8 +112,8 @@ for (const [network, country] of reader.withinPath(
 }
 ```
 
-Path elements are strings for map keys and numbers for array indexes. Negative
-indexes count from the end of an array.
+Path elements are strings for map keys and finite, safe-integer numbers for
+array indexes. Negative indexes count from the end of an array.
 
 Create compiled path lookups once and reuse them in hot paths. `reader.path()`
 parses and stores the path, and the returned `PathLookup` avoids reparsing the

@@ -307,7 +307,7 @@ impl NativeReader {
         &mut self,
         env: &'env Env,
         ip_address: JsString<'env>,
-        path: Vec<Either<String, i64>>,
+        path: Vec<Either<String, f64>>,
     ) -> Result<Unknown<'env>> {
         let ip = self.parse_lookup_ip(env, ip_address)?;
         let owned_path = parse_path(path)?;
@@ -324,7 +324,7 @@ impl NativeReader {
         &mut self,
         env: &'env Env,
         ip_address: JsString<'env>,
-        paths: Vec<Vec<Either<String, i64>>>,
+        paths: Vec<Vec<Either<String, f64>>>,
     ) -> Result<Unknown<'env>> {
         let ip = self.parse_lookup_ip(env, ip_address)?;
         let owned_paths = parse_paths(paths)?;
@@ -337,7 +337,7 @@ impl NativeReader {
     }
 
     #[napi(js_name = "compilePath")]
-    pub fn compile_path(&mut self, path: Vec<Either<String, i64>>) -> Result<u32> {
+    pub fn compile_path(&mut self, path: Vec<Either<String, f64>>) -> Result<u32> {
         if self.reader.is_none() {
             return Err(invalid_arg(ERR_CLOSED_DB));
         }
@@ -431,7 +431,7 @@ impl NativeReader {
         &mut self,
         env: &'env Env,
         ips: Array<'env>,
-        path: Vec<Either<String, i64>>,
+        path: Vec<Either<String, f64>>,
     ) -> Result<Unknown<'env>> {
         let parsed_ips = self.parse_lookup_ips(env, &ips)?;
         let owned_path = parse_path(path)?;
@@ -450,7 +450,7 @@ impl NativeReader {
         &mut self,
         env: &'env Env,
         ips: Array<'env>,
-        paths: Vec<Vec<Either<String, i64>>>,
+        paths: Vec<Vec<Either<String, f64>>>,
     ) -> Result<Unknown<'env>> {
         let parsed_ips = self.parse_lookup_ips(env, &ips)?;
         let owned_paths = parse_paths(paths)?;
@@ -471,7 +471,7 @@ impl NativeReader {
         include_aliased_networks: Option<bool>,
         include_networks_without_data: Option<bool>,
         skip_empty_values: Option<bool>,
-        path: Option<Vec<Either<String, i64>>>,
+        path: Option<Vec<Either<String, f64>>>,
     ) -> Result<NativeNetworkCursor> {
         let cidr = cidr.as_deref().map(parse_network).transpose()?;
         let path = path.map(parse_path).transpose()?;
@@ -570,7 +570,7 @@ fn collect_lookup_results<'env>(
     values.into_unknown(env)
 }
 
-fn parse_paths(paths: Vec<Vec<Either<String, i64>>>) -> Result<Vec<Vec<OwnedPathElement>>> {
+fn parse_paths(paths: Vec<Vec<Either<String, f64>>>) -> Result<Vec<Vec<OwnedPathElement>>> {
     paths.into_iter().map(parse_path).collect()
 }
 

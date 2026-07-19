@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Numeric path components now reject fractional, non-finite, and unsafe
+  JavaScript numbers instead of relying on native integer coercion.
 - Updated the Rust `maxminddb` dependency to 0.30.0, inheriting safer corrupt
   database traversal and faster path and record decoding.
 - Invalid UTF-8 in decoded MMDB string values and map keys now follows Node's
