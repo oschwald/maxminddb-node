@@ -44,22 +44,22 @@ enum ReaderSource {
 
 pub struct OpenReaderTask {
     path: String,
+    mode: String,
     cache_capacity: Option<u32>,
 }
 
+pub struct OpenReaderOutput(ReaderSource);
+
 impl Task for OpenReaderTask {
-    type Output = MaxMindReader<Vec<u8>>;
+    type Output = OpenReaderOutput;
     type JsValue = NativeReader;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        open_memory_reader(Path::new(&self.path))
+        open_source(&self.path, Some(&self.mode)).map(OpenReaderOutput)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(create_reader(
-            ReaderSource::Memory(output),
-            self.cache_capacity,
-        ))
+        Ok(create_reader(output.0, self.cache_capacity))
     }
 }
 
@@ -598,9 +598,14 @@ pub fn open_reader(
 }
 
 #[napi(js_name = "openReaderAsync")]
-pub fn open_reader_async(path: String, cache_capacity: Option<u32>) -> AsyncTask<OpenReaderTask> {
+pub fn open_reader_async(
+    path: String,
+    mode: String,
+    cache_capacity: Option<u32>,
+) -> AsyncTask<OpenReaderTask> {
     AsyncTask::new(OpenReaderTask {
         path,
+        mode,
         cache_capacity,
     })
 }

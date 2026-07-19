@@ -225,6 +225,7 @@ export declare class Reader<T extends Response = Response> {
   metadata: Metadata;
   load(database: Buffer): void;
   reload(): void;
+  reloadAsync(): Promise<void>;
   close(): void;
   clearCache(): void;
   cacheStats(): CacheStats;

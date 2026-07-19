@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `reloadAsync()` to open and validate replacement databases without
+  blocking the JavaScript event loop.
 - Added `getPaths()` and `getManyPaths()` for decoding multiple selected values
   with one database lookup per IP.
 - Added `networksPath()` and `withinPath()` for selectively decoding one value
@@ -33,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- Moved asynchronous reload work, including memory-mapped reloads triggered by
+  file watchers, off the JavaScript event loop.
 - Added multi-field projections that reuse one search-tree lookup per IP,
   improving batch throughput when several fields are needed without decoding
   the full record.

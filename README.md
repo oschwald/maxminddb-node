@@ -71,6 +71,10 @@ watched reload leaves the existing reader active, stores the failure on
 reload clears `lastReloadError` and calls the hook. Close watched readers with
 `reader.close()` to remove the file watcher.
 
+Call `await reader.reloadAsync()` to open and validate a replacement database
+on a worker thread before atomically swapping it into the reader. The existing
+`reader.reload()` remains available when synchronous replacement is preferred.
+
 ## Extensions
 
 ```js

@@ -327,7 +327,11 @@ class Reader {
       filepath,
       mode,
       options,
-      await native.openReaderAsync(filepath, normalizeCacheCapacity(options))
+      await native.openReaderAsync(
+        filepath,
+        mode,
+        normalizeCacheCapacity(options)
+      )
     );
   }
 
@@ -381,6 +385,36 @@ class Reader {
     }
   }
 
+  async reloadAsync() {
+    if (!this._filepath) {
+      throw new Error('Cannot reload a buffer-backed Reader');
+    }
+    try {
+      const replacement = await native.openReaderAsync(
+        this._filepath,
+        this._mode,
+        this._cacheCapacity
+      );
+      if (this.closed) {
+        replacement.close();
+        throw new Error('Cannot reload a closed Reader');
+      }
+      this._replaceNativeReader(replacement);
+    } catch (error) {
+      this._lastReloadError = error;
+      throw error;
+    }
+  }
+
+  _replaceNativeReader(replacement) {
+    const metadata = normalizeMetadata(replacement.metadata());
+    const previous = this._reader;
+    this._reader = replacement;
+    this.metadata = metadata;
+    this._lastReloadError = null;
+    previous.close();
+  }
+
   close() {
     if (this._watchFilepath && this._watchListener) {
       fs.unwatchFile(this._watchFilepath, this._watchListener);
@@ -427,24 +461,16 @@ class Reader {
     }
 
     try {
-      if (mode === MODE_MEMORY || mode === MODE_BUFFER) {
-        const replacement = await native.openReaderAsync(
-          filepath,
-          this._cacheCapacity
-        );
-        if (this.closed || this._watchFilepath !== filepath) {
-          replacement.close();
-          return;
-        }
-        const metadata = normalizeMetadata(replacement.metadata());
-        const previous = this._reader;
-        this._reader = replacement;
-        this.metadata = metadata;
-        this._lastReloadError = null;
-        previous.close();
-      } else {
-        this.reload();
+      const replacement = await native.openReaderAsync(
+        filepath,
+        mode,
+        this._cacheCapacity
+      );
+      if (this.closed || this._watchFilepath !== filepath) {
+        replacement.close();
+        return;
       }
+      this._replaceNativeReader(replacement);
       if (!this.closed && this._watchFilepath === filepath && hook) {
         hook();
       }

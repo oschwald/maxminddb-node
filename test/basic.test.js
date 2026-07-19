@@ -422,6 +422,48 @@ test('opens owned-memory modes without Node-side file reads', async () => {
   }
 });
 
+test('reloads file-backed readers asynchronously', async () => {
+  const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  for (const mode of [
+    maxmind.MODE_MMAP,
+    maxmind.MODE_MEMORY,
+    maxmind.MODE_BUFFER,
+  ]) {
+    const reader = await maxmind.open(sourcePath, { mode });
+    const previous = reader._reader;
+    await reader.reloadAsync();
+
+    assert.notStrictEqual(reader._reader, previous);
+    assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
+    assert.equal(reader.lastReloadError, null);
+    reader.close();
+  }
+
+  const bufferReader = new maxmind.Reader(fs.readFileSync(sourcePath));
+  await assert.rejects(
+    () => bufferReader.reloadAsync(),
+    /Cannot reload a buffer-backed Reader/
+  );
+  bufferReader.close();
+});
+
+test('keeps the existing reader after an asynchronous reload failure', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
+  const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  const dbPath = path.join(dir, 'GeoIP2-City-Test.mmdb');
+  fs.copyFileSync(sourcePath, dbPath);
+
+  const reader = await maxmind.open(dbPath, { mode: maxmind.MODE_MEMORY });
+  const previous = reader._reader;
+  fs.writeFileSync(dbPath, Buffer.from('not an mmdb'));
+
+  await assert.rejects(() => reader.reloadAsync(), /bad data/i);
+  assert.strictEqual(reader._reader, previous);
+  assert(reader.lastReloadError instanceof Error);
+  assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
+  reader.close();
+});
+
 test('unwatches database files on close', async () => {
   const originalWatchFile = fs.watchFile;
   const originalUnwatchFile = fs.unwatchFile;
