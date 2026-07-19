@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory, avoiding a full intermediate Node `Buffer` and event-loop blocking.
 - Store common compiled paths inline, avoiding a heap allocation on each hot
   path lookup.
+- Return native network pages directly when no buffered records remain,
+  avoiding an extra JavaScript array allocation and copy per page.
 
 ## [0.2.1] - 2026-07-03
 

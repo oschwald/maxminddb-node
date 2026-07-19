@@ -238,6 +238,11 @@ test('paginates networks within a CIDR', async () => {
   const secondPage = iterator.nextPage();
   assert.deepEqual(secondPage, records.slice(1, 2));
 
+  const mixedIterator = reader.within('81.2.69.0/24', { pageSize: 2 });
+  assert.deepEqual(mixedIterator.next().value, records[0]);
+  assert.deepEqual(mixedIterator.nextPage(2), records.slice(1, 3));
+  assert.deepEqual([...mixedIterator], records.slice(3));
+
   assert.deepEqual(
     reader.within('81.2.69.0/24').nextPage(0xffffffff),
     records

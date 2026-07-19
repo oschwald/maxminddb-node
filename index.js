@@ -262,6 +262,16 @@ class NetworkIterator {
       return [];
     }
 
+    if (this._index >= this._page.length) {
+      this._page = [];
+      this._index = 0;
+      const page = this._cursor.nextPage(pageSize);
+      if (page.length === 0) {
+        this.close();
+      }
+      return page;
+    }
+
     const page = [];
     while (page.length < pageSize && this._index < this._page.length) {
       page.push(this._page[this._index]);
@@ -270,7 +280,9 @@ class NetworkIterator {
 
     if (page.length < pageSize) {
       const nativePage = this._cursor.nextPage(pageSize - page.length);
-      page.push(...nativePage);
+      for (const record of nativePage) {
+        page.push(record);
+      }
       if (nativePage.length === 0) {
         this.close();
       }
