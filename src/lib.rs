@@ -26,7 +26,14 @@ use napi::{
     JsString, Result, Task,
 };
 use napi_derive::napi;
-use std::{cell::RefCell, net::IpAddr, num::NonZeroUsize, path::Path, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    net::IpAddr,
+    num::NonZeroUsize,
+    path::Path,
+    sync::Arc,
+};
 
 const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
 
@@ -177,7 +184,8 @@ pub struct NativeReader {
     reader: Option<Arc<ReaderSource>>,
     cache: RefCell<Option<RecordCache>>,
     property_names: RefCell<PropertyNameCache>,
-    paths: RefCell<Vec<Vec<OwnedPathElement>>>,
+    paths: RefCell<HashMap<u32, Vec<OwnedPathElement>>>,
+    next_path_id: Cell<u32>,
     ip_version: u16,
 }
 
@@ -263,6 +271,7 @@ impl NativeReader {
     pub fn close(&mut self, env: &Env) -> Result<()> {
         self.clear_record_cache(env)?;
         self.clear_property_names(env)?;
+        self.paths.borrow_mut().clear();
         self.reader = None;
         Ok(())
     }
@@ -306,15 +315,30 @@ impl NativeReader {
 
     #[napi(js_name = "compilePath")]
     pub fn compile_path(&self, path: Vec<Either<String, i64>>) -> Result<u32> {
+        if self.reader.is_none() {
+            return Err(invalid_arg(ERR_CLOSED_DB));
+        }
         let path = parse_path(path)?;
         let mut paths = self
             .paths
             .try_borrow_mut()
             .map_err(|_| napi_error("path cache already borrowed"))?;
-        let path_id =
-            u32::try_from(paths.len()).map_err(|_| napi_error("too many compiled paths"))?;
-        paths.push(path);
+        let path_id = self.next_path_id.get();
+        let next_path_id = path_id
+            .checked_add(1)
+            .ok_or_else(|| napi_error("too many compiled paths"))?;
+        paths.insert(path_id, path);
+        self.next_path_id.set(next_path_id);
         Ok(path_id)
+    }
+
+    #[napi(js_name = "releasePath")]
+    pub fn release_path(&self, path_id: u32) -> Result<()> {
+        self.paths
+            .try_borrow_mut()
+            .map_err(|_| napi_error("path cache already borrowed"))?
+            .remove(&path_id);
+        Ok(())
     }
 
     #[napi(js_name = "getCompiledPath")]
@@ -325,16 +349,16 @@ impl NativeReader {
         path_id: u32,
     ) -> Result<Unknown<'env>> {
         let ip = self.parse_lookup_ip(env, ip_address)?;
+        let reader = self
+            .reader
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         let paths = self
             .paths
             .try_borrow()
             .map_err(|_| napi_error("path cache already borrowed"))?;
         let owned_path = compiled_path(&paths, path_id)?;
         let path_elements = path_elements_from_owned(owned_path);
-        let reader = self
-            .reader
-            .as_ref()
-            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         reader.lookup_path_to_js(env, ip, &path_elements, &self.property_names)
     }
 
@@ -375,16 +399,16 @@ impl NativeReader {
         path_id: u32,
     ) -> Result<Unknown<'env>> {
         let parsed_ips = self.parse_lookup_ips(env, &ips)?;
+        let reader = self
+            .reader
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         let paths = self
             .paths
             .try_borrow()
             .map_err(|_| napi_error("path cache already borrowed"))?;
         let owned_path = compiled_path(&paths, path_id)?;
         let path_elements = path_elements_from_owned(owned_path);
-        let reader = self
-            .reader
-            .as_ref()
-            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         collect_lookup_results(env, parsed_ips, |ip| {
             reader.lookup_path_to_js(env, ip, &path_elements, &self.property_names)
         })
@@ -585,7 +609,8 @@ fn create_reader(source: ReaderSource, cache_capacity: Option<u32>) -> NativeRea
         reader: Some(Arc::new(source)),
         cache: RefCell::new(cache),
         property_names: RefCell::new(PropertyNameCache::new()),
-        paths: RefCell::new(Vec::new()),
+        paths: RefCell::new(HashMap::new()),
+        next_path_id: Cell::new(0),
         ip_version,
     }
 }

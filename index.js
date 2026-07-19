@@ -54,6 +54,13 @@ function loadNativeBinding() {
 }
 
 const native = loadNativeBinding();
+const pathFinalizer = new FinalizationRegistry(({ nativeReader, pathId }) => {
+  try {
+    nativeReader.releasePath(pathId);
+  } catch {
+    // Reader shutdown may have already released all compiled paths.
+  }
+});
 
 const DEFAULT_CACHE_MAX = 10_000;
 const MAX_CACHE_MAX = 0xffffffff;
@@ -165,16 +172,48 @@ function waitForFile(filepath) {
 class PathLookup {
   constructor(reader, path) {
     this._reader = reader;
-    this._pathId = reader._reader.compilePath(path);
     this.path = Object.freeze([...path]);
+    this._closed = false;
+    this._compileFor(reader._reader);
   }
 
   get(ipAddress) {
-    return this._reader._reader.getCompiledPath(ipAddress, this._pathId);
+    this._ensureCompiled();
+    return this._nativeReader.getCompiledPath(ipAddress, this._pathId);
   }
 
   getMany(ipAddresses) {
-    return this._reader._reader.getManyCompiledPath(ipAddresses, this._pathId);
+    this._ensureCompiled();
+    return this._nativeReader.getManyCompiledPath(ipAddresses, this._pathId);
+  }
+
+  close() {
+    if (!this._closed) {
+      pathFinalizer.unregister(this);
+      this._nativeReader.releasePath(this._pathId);
+      this._closed = true;
+    }
+  }
+
+  _ensureCompiled() {
+    if (this._closed) {
+      throw new Error('Path lookup is closed.');
+    }
+    if (this._nativeReader !== this._reader._reader) {
+      pathFinalizer.unregister(this);
+      this._nativeReader.releasePath(this._pathId);
+      this._compileFor(this._reader._reader);
+    }
+  }
+
+  _compileFor(nativeReader) {
+    this._nativeReader = nativeReader;
+    this._pathId = nativeReader.compilePath(this.path);
+    pathFinalizer.register(
+      this,
+      { nativeReader: this._nativeReader, pathId: this._pathId },
+      this
+    );
   }
 }
 

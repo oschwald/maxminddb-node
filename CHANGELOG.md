@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the constant remains available as a compatibility alias.
 - Network iterators now close their native cursor when a `for...of` loop exits
   early.
+- Compiled `PathLookup` instances can be closed explicitly, release their
+  native path automatically after collection, and survive watched reader swaps.
 
 ### Performance
 
@@ -39,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frequently reused records during broad scans without increasing capacity.
 - Open owned-memory file modes on a worker thread and read directly into Rust
   memory, avoiding a full intermediate Node `Buffer` and event-loop blocking.
+- Store common compiled paths inline, avoiding a heap allocation on each hot
+  path lookup.
 
 ## [0.2.1] - 2026-07-03
 

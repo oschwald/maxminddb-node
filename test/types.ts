@@ -28,6 +28,7 @@ async function checkTypes() {
   opened.getPath('8.8.8.8', ['subdivisions', 0, 'iso_code']);
   const countryPath: PathLookup<string> = opened.path<string>(['country', 'iso_code']);
   const countryCode: string | null = countryPath.get('8.8.8.8');
+  countryPath.close();
   void countryCode;
   opened.getMany(['8.8.8.8']);
   opened.getManyPath(['8.8.8.8'], ['country', 'iso_code']);

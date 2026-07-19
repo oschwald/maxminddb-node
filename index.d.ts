@@ -197,6 +197,7 @@ export declare class PathLookup<TValue = unknown> {
   readonly path: ReadonlyArray<string | number>;
   get(ipAddress: string): TValue | null;
   getMany(ipAddresses: ReadonlyArray<string>): Array<TValue | null>;
+  close(): void;
 }
 
 export declare class NetworkIterator<T = Response>

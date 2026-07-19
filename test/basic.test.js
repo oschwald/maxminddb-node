@@ -144,6 +144,13 @@ test('reuses compiled paths', async () => {
     country.getMany(['1.1.1.1', '175.16.199.1', '81.2.69.142']),
     [null, 'CN', 'GB']
   );
+  const pathId = country._pathId;
+  country.close();
+  assert.throws(() => country.get('175.16.199.1'), /Path lookup is closed/);
+  assert.throws(
+    () => reader._reader.getCompiledPath('175.16.199.1', pathId),
+    /Invalid compiled path id/
+  );
 });
 
 test('looks up batches', async () => {
@@ -415,6 +422,7 @@ test('records and clears watched reload failures', async () => {
         hookCalls += 1;
       },
     });
+    const country = reader.path(['country', 'iso_code']);
 
     fs.writeFileSync(dbPath, Buffer.from('not an mmdb'));
     watched[0].listener();
@@ -431,6 +439,8 @@ test('records and clears watched reload failures', async () => {
 
     assert.equal(reader.lastReloadError, null);
     assert.equal(hookCalls, 1);
+    assert.equal(country.get('175.16.199.1'), 'CN');
+    country.close();
     reader.close();
   } finally {
     fs.watchFile = originalWatchFile;
