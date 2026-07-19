@@ -172,6 +172,35 @@ test('looks up batches', async () => {
   ]);
 });
 
+test('looks up multi-field projections', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const ips = ['1.1.1.1', '175.16.199.1', '81.2.69.142'];
+  const paths = [
+    ['country', 'iso_code'],
+    ['registered_country', 'iso_code'],
+    ['continent', 'code'],
+    ['city', 'names', 'en'],
+    ['location', 'time_zone'],
+    ['missing'],
+  ];
+
+  assert.deepEqual(reader.getPaths('81.2.69.142', paths), [
+    'GB',
+    'US',
+    'EU',
+    'London',
+    'Europe/London',
+    null,
+  ]);
+  assert.deepEqual(reader.getManyPaths(ips, paths), [
+    [null, null, null, null, null, null],
+    ['CN', 'CN', 'AS', 'Changchun', 'Asia/Harbin', null],
+    ['GB', 'US', 'EU', 'London', 'Europe/London', null],
+  ]);
+  assert.deepEqual(reader.getPaths('81.2.69.142', []), []);
+  assert.deepEqual(reader.getManyPaths([], paths), []);
+});
+
 test('iterates networks within a CIDR', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
   const records = [...reader.within('81.2.69.142/31')];
@@ -303,6 +332,14 @@ test('closes reader', async () => {
   assert.throws(() => reader.getMany(['81.2.69.142']), /closed MaxMind DB/);
   assert.throws(
     () => reader.getManyPath(['81.2.69.142'], ['country']),
+    /closed MaxMind DB/
+  );
+  assert.throws(
+    () => reader.getPaths('81.2.69.142', [['country']]),
+    /closed MaxMind DB/
+  );
+  assert.throws(
+    () => reader.getManyPaths(['81.2.69.142'], [['country']]),
     /closed MaxMind DB/
   );
   assert.throws(() => reader.networks(), /closed MaxMind DB/);

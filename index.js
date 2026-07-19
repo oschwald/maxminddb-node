@@ -469,6 +469,10 @@ class Reader {
     return this._reader.getPath(ipAddress, path);
   }
 
+  getPaths(ipAddress, paths) {
+    return this._reader.getPaths(ipAddress, paths);
+  }
+
   path(path) {
     return new PathLookup(this, path);
   }
@@ -483,6 +487,10 @@ class Reader {
 
   getManyPath(ipAddresses, path) {
     return this._reader.getManyPath(ipAddresses, path);
+  }
+
+  getManyPaths(ipAddresses, paths) {
+    return this._reader.getManyPaths(ipAddresses, paths);
   }
 
   networks(options = {}) {

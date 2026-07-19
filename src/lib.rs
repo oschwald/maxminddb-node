@@ -8,12 +8,12 @@ mod paths;
 
 use crate::{
     cache::{cache_stats_to_js, PropertyNameCache, RecordCache},
-    decode::{lookup_result_path_to_js, lookup_result_record_to_js},
+    decode::{lookup_result_path_to_js, lookup_result_paths_to_js, lookup_result_record_to_js},
     errors::{invalid_arg, lookup_error, napi_error, open_error},
     ip::{parse_js_ip, parse_network, prefix_len_for_lookup},
     metadata::metadata_to_js,
     networks::{collect_next_networks_page_to_js, make_within_options, NetworkIter},
-    paths::{compiled_path, parse_path, path_elements_from_owned, OwnedPathElement},
+    paths::{compiled_path, parse_path, path_elements_from_owned, OwnedPathElement, PathElements},
 };
 use maxminddb::{MaxMindDbError, Mmap, Reader as MaxMindReader, WithinOptions};
 use memmap2::MmapOptions;
@@ -139,6 +139,25 @@ impl ReaderSource {
             ReaderSource::Memory(reader) => {
                 let result = reader.lookup(ip).map_err(lookup_error)?;
                 lookup_result_path_to_js(env, &result, path, property_names)
+            }
+        }
+    }
+
+    fn lookup_paths_to_js<'env>(
+        &self,
+        env: &'env Env,
+        ip: IpAddr,
+        paths: &[PathElements<'_>],
+        property_names: &mut PropertyNameCache,
+    ) -> Result<Unknown<'env>> {
+        match self {
+            ReaderSource::Mmap(reader) => {
+                let result = reader.lookup(ip).map_err(lookup_error)?;
+                lookup_result_paths_to_js(env, &result, paths, property_names)
+            }
+            ReaderSource::Memory(reader) => {
+                let result = reader.lookup(ip).map_err(lookup_error)?;
+                lookup_result_paths_to_js(env, &result, paths, property_names)
             }
         }
     }
@@ -300,6 +319,23 @@ impl NativeReader {
         reader.lookup_path_to_js(env, ip, &path_elements, &mut self.property_names)
     }
 
+    #[napi(js_name = "getPaths")]
+    pub fn get_paths<'env>(
+        &mut self,
+        env: &'env Env,
+        ip_address: JsString<'env>,
+        paths: Vec<Vec<Either<String, i64>>>,
+    ) -> Result<Unknown<'env>> {
+        let ip = self.parse_lookup_ip(env, ip_address)?;
+        let owned_paths = parse_paths(paths)?;
+        let path_elements = path_elements_from_paths(&owned_paths);
+        let reader = self
+            .reader
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        reader.lookup_paths_to_js(env, ip, &path_elements, &mut self.property_names)
+    }
+
     #[napi(js_name = "compilePath")]
     pub fn compile_path(&mut self, path: Vec<Either<String, i64>>) -> Result<u32> {
         if self.reader.is_none() {
@@ -409,6 +445,25 @@ impl NativeReader {
         })
     }
 
+    #[napi(js_name = "getManyPaths")]
+    pub fn get_many_paths<'env>(
+        &mut self,
+        env: &'env Env,
+        ips: Array<'env>,
+        paths: Vec<Vec<Either<String, i64>>>,
+    ) -> Result<Unknown<'env>> {
+        let parsed_ips = self.parse_lookup_ips(env, &ips)?;
+        let owned_paths = parse_paths(paths)?;
+        let path_elements = path_elements_from_paths(&owned_paths);
+        let reader = self
+            .reader
+            .as_ref()
+            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        collect_lookup_results(env, parsed_ips, |ip| {
+            reader.lookup_paths_to_js(env, ip, &path_elements, &mut self.property_names)
+        })
+    }
+
     #[napi(js_name = "networkCursor")]
     pub fn network_cursor(
         &self,
@@ -513,6 +568,17 @@ fn collect_lookup_results<'env>(
         values.set(index as u32, lookup(ip)?)?;
     }
     values.into_unknown(env)
+}
+
+fn parse_paths(paths: Vec<Vec<Either<String, i64>>>) -> Result<Vec<Vec<OwnedPathElement>>> {
+    paths.into_iter().map(parse_path).collect()
+}
+
+fn path_elements_from_paths(paths: &[Vec<OwnedPathElement>]) -> Vec<PathElements<'_>> {
+    paths
+        .iter()
+        .map(|path| path_elements_from_owned(path))
+        .collect()
 }
 
 impl ObjectFinalize for NativeReader {

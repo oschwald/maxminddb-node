@@ -15,6 +15,13 @@ const DEFAULT_COUNT = 200_000;
 const DEFAULT_WARMUP = 50_000;
 const DEFAULT_NETWORK_CIDR = '81.2.69.0/24';
 const DEFAULT_NETWORK_PAGE_SIZE = 1000;
+const PROJECTION_PATHS = [
+  ['country', 'iso_code'],
+  ['registered_country', 'iso_code'],
+  ['continent', 'code'],
+  ['city', 'names', 'en'],
+  ['location', 'time_zone'],
+];
 
 function parseArgs(argv) {
   const options = {
@@ -355,6 +362,25 @@ async function benchDatabase(db, options, ips, nodeMaxmind) {
     ips,
     options.warmup,
     (reader, values) => reader.getManyPath(values, ['country', 'iso_code']),
+    dbResult,
+    options
+  );
+  benchMany(
+    'getManyPaths 3 fields',
+    cached,
+    ips,
+    options.warmup,
+    (reader, values) =>
+      reader.getManyPaths(values, PROJECTION_PATHS.slice(0, 3)),
+    dbResult,
+    options
+  );
+  benchMany(
+    'getManyPaths 5 fields',
+    cached,
+    ips,
+    options.warmup,
+    (reader, values) => reader.getManyPaths(values, PROJECTION_PATHS),
     dbResult,
     options
   );

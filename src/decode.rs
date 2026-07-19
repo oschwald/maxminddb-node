@@ -1,6 +1,7 @@
 use crate::{
     cache::{PropertyNameCache, RecordCache},
     errors::{lookup_error, napi_error},
+    paths::PathElements,
 };
 use napi::{
     bindgen_prelude::{Env, Null, ToNapiValue, Unknown},
@@ -418,6 +419,32 @@ pub(crate) fn lookup_result_path_to_js<'env, S: AsRef<[u8]>>(
     property_names: &mut PropertyNameCache,
 ) -> Result<Unknown<'env>> {
     let _guard = JsDecodeEnvGuard::enter(env.raw(), property_names);
+    lookup_result_path_with_context_to_js(env, result, path)
+}
+
+pub(crate) fn lookup_result_paths_to_js<'env, S: AsRef<[u8]>>(
+    env: &'env Env,
+    result: &maxminddb::LookupResult<'_, S>,
+    paths: &[PathElements<'_>],
+    property_names: &mut PropertyNameCache,
+) -> Result<Unknown<'env>> {
+    let length = u32::try_from(paths.len()).map_err(|_| napi_error("too many paths"))?;
+    let mut values = env.create_array(length)?;
+    let _guard = JsDecodeEnvGuard::enter(env.raw(), property_names);
+    for (index, path) in paths.iter().enumerate() {
+        values.set(
+            index as u32,
+            lookup_result_path_with_context_to_js(env, result, path)?,
+        )?;
+    }
+    values.into_unknown(env)
+}
+
+fn lookup_result_path_with_context_to_js<'env, S: AsRef<[u8]>>(
+    env: &'env Env,
+    result: &maxminddb::LookupResult<'_, S>,
+    path: &[maxminddb::PathElement<'_>],
+) -> Result<Unknown<'env>> {
     match result.decode_path::<RawJsValue>(path) {
         Ok(Some(value)) => Ok(value.into_unknown(env)),
         Ok(None) => Null.into_unknown(env),

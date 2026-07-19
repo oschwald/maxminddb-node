@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `getPaths()` and `getManyPaths()` for decoding multiple selected values
+  with one database lookup per IP.
 - Added `networksPath()` and `withinPath()` for selectively decoding one value
   while iterating database networks.
 
@@ -31,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- Added multi-field projections that reuse one search-tree lookup per IP,
+  improving batch throughput when several fields are needed without decoding
+  the full record.
 - Moved gzip input detection into the native readers, eliminating an extra
   asynchronous file open, read, and close during path-based opens.
 - Decode MMDB strings and map keys directly from raw bytes into JavaScript

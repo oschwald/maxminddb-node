@@ -61,9 +61,9 @@ cache sizes can therefore retain significant heap memory when the database
 records are large or lookups touch many distinct data offsets. Cached records
 are returned by reference, so mutating a cached record can affect later lookups
 for the same data offset until that entry is evicted, `reader.clearCache()` is
-called, or the reader is closed. `getPath()`, `getManyPath()`, and compiled
-`reader.path()` lookups decode only the requested path and do not populate the
-full-record cache.
+called, or the reader is closed. `getPath()`, `getPaths()`, `getManyPath()`,
+`getManyPaths()`, and compiled `reader.path()` lookups decode only the requested
+paths and do not populate the full-record cache.
 
 When `watchForUpdates` is enabled, file-change reloads run serially. A failed
 watched reload leaves the existing reader active, stores the failure on
@@ -77,6 +77,14 @@ reload clears `lastReloadError` and calls the hook. Close watched readers with
 reader.getPath('8.8.8.8', ['country', 'iso_code']);
 reader.getMany(['8.8.8.8', '1.1.1.1']);
 reader.getManyPath(['8.8.8.8', '1.1.1.1'], ['country', 'iso_code']);
+reader.getPaths('8.8.8.8', [
+  ['country', 'iso_code'],
+  ['continent', 'code'],
+]);
+reader.getManyPaths(['8.8.8.8', '1.1.1.1'], [
+  ['country', 'iso_code'],
+  ['continent', 'code'],
+]);
 
 const countryCode = reader.path(['country', 'iso_code']);
 countryCode.get('8.8.8.8');
@@ -107,9 +115,12 @@ Create compiled path lookups once and reuse them in hot paths. `reader.path()`
 parses and stores the path, and the returned `PathLookup` avoids reparsing the
 path array on each lookup.
 
-For high-volume lookup workloads, prefer `getMany()` or `getManyPath()` when
-you can batch IPs. They cross the native boundary once for the whole batch and
-are significantly faster than calling `get()` in a JavaScript loop.
+For high-volume lookup workloads, prefer `getMany()`, `getManyPath()`, or
+`getManyPaths()` when you can batch IPs. They cross the native boundary once
+for the whole batch and are significantly faster than calling `get()` in a
+JavaScript loop. `getPaths()` and `getManyPaths()` perform one database lookup
+per IP and return projected values in the same order as the requested paths;
+missing paths are returned as `null`.
 
 `networks()` and `within()` return lazy iterators backed by native cursors.
 Use `networksPath()` or `withinPath()` to decode only a selected field while

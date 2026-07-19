@@ -26,12 +26,24 @@ async function checkTypes() {
   void prefixLength;
 
   opened.getPath('8.8.8.8', ['subdivisions', 0, 'iso_code']);
+  const projected = opened.getPaths<[string | null, string | null]>(
+    '8.8.8.8',
+    [['country', 'iso_code'], ['continent', 'code']],
+  );
+  const projectedCountry: string | null = projected[0];
+  void projectedCountry;
   const countryPath: PathLookup<string> = opened.path<string>(['country', 'iso_code']);
   const countryCode: string | null = countryPath.get('8.8.8.8');
   countryPath.close();
   void countryCode;
   opened.getMany(['8.8.8.8']);
   opened.getManyPath(['8.8.8.8'], ['country', 'iso_code']);
+  const projectedRows = opened.getManyPaths<[string | null, string | null]>(
+    ['8.8.8.8'],
+    [['country', 'iso_code'], ['continent', 'code']],
+  );
+  const projectedContinent: string | null = projectedRows[0][1];
+  void projectedContinent;
   for (const [_network, record] of opened.within('8.8.8.0/24')) {
     record?.country?.iso_code;
   }

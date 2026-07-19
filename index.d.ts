@@ -193,6 +193,8 @@ export interface CacheStats {
   readonly evictions: number;
 }
 
+export type LookupPath = ReadonlyArray<string | number>;
+
 export declare class PathLookup<TValue = unknown> {
   readonly path: ReadonlyArray<string | number>;
   get(ipAddress: string): TValue | null;
@@ -227,16 +229,24 @@ export declare class Reader<T extends Response = Response> {
   clearCache(): void;
   cacheStats(): CacheStats;
   get(ipAddress: string): T | null;
-  getPath(ipAddress: string, path: ReadonlyArray<string | number>): unknown;
+  getPath(ipAddress: string, path: LookupPath): unknown;
+  getPaths<TValues extends ReadonlyArray<unknown> = unknown[]>(
+    ipAddress: string,
+    paths: ReadonlyArray<LookupPath>,
+  ): TValues;
   path<TValue = unknown>(
-    path: ReadonlyArray<string | number>,
+    path: LookupPath,
   ): PathLookup<TValue>;
   getWithPrefixLength(ipAddress: string): [T | null, number];
   getMany(ipAddresses: ReadonlyArray<string>): Array<T | null>;
   getManyPath(
     ipAddresses: ReadonlyArray<string>,
-    path: ReadonlyArray<string | number>,
+    path: LookupPath,
   ): unknown[];
+  getManyPaths<TValues extends ReadonlyArray<unknown> = unknown[]>(
+    ipAddresses: ReadonlyArray<string>,
+    paths: ReadonlyArray<LookupPath>,
+  ): TValues[];
   networks(options?: NetworkPagesOptions): NetworkIterator<T>;
   within(cidr: string, options?: NetworkPagesOptions): NetworkIterator<T>;
   networksPath<TValue = unknown>(
