@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- Moved gzip input detection into the native readers, eliminating an extra
+  asynchronous file open, read, and close during path-based opens.
 - Decode MMDB strings and map keys directly from raw bytes into JavaScript
   strings, avoiding redundant UTF-8 decoding in Rust and Node.
 - Reduced lookup and batch allocation by reading IP strings directly from V8

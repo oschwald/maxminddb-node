@@ -76,25 +76,6 @@ const MODE_MMAP = 'mmap';
 const MODE_MEMORY = 'memory';
 const MODE_BUFFER = 'buffer';
 
-function isGzipBuffer(buffer) {
-  return buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b;
-}
-
-async function assertNotGzipFile(filepath) {
-  const handle = await fs.promises.open(filepath, 'r');
-  try {
-    const buffer = Buffer.alloc(2);
-    const { bytesRead } = await handle.read(buffer, 0, 2, 0);
-    if (bytesRead === 2 && isGzipBuffer(buffer)) {
-      throw new Error(
-        'Looks like you are passing in a file in gzip format, please use mmdb database instead.'
-      );
-    }
-  } finally {
-    await handle.close();
-  }
-}
-
 function normalizeMode(mode) {
   if (mode == null || mode === MODE_AUTO) {
     return MODE_MMAP;
@@ -532,7 +513,6 @@ class Reader {
 async function open(filepath, opts, cb) {
   assert(!cb, legacyErrorMessage);
   const options = opts || {};
-  await assertNotGzipFile(filepath);
 
   const mode = normalizeMode(options.mode);
   const reader =

@@ -16,6 +16,7 @@ use crate::{
     paths::{compiled_path, parse_path, path_elements_from_owned, OwnedPathElement},
 };
 use maxminddb::{MaxMindDbError, Mmap, Reader as MaxMindReader, WithinOptions};
+use memmap2::MmapOptions;
 use napi::{
     bindgen_prelude::{
         Array, AsyncTask, Buffer, Either, Env, Object, ObjectFinalize, ToNapiValue, Unknown,
@@ -23,9 +24,18 @@ use napi::{
     JsString, Result, Task,
 };
 use napi_derive::napi;
-use std::{collections::HashMap, net::IpAddr, num::NonZeroUsize, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs::{self, File},
+    net::IpAddr,
+    num::NonZeroUsize,
+    path::Path,
+    sync::Arc,
+};
 
 const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
+const ERR_GZIP_DB: &str =
+    "Looks like you are passing in a file in gzip format, please use mmdb database instead.";
 
 enum ReaderSource {
     Mmap(MaxMindReader<Mmap>),
@@ -42,7 +52,7 @@ impl Task for OpenReaderTask {
     type JsValue = NativeReader;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        MaxMindReader::open_readfile(Path::new(&self.path)).map_err(open_error)
+        open_memory_reader(Path::new(&self.path))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -447,9 +457,7 @@ impl NativeReader {
     }
 
     fn reader_from_bytes(bytes: Vec<u8>) -> Result<ReaderSource> {
-        MaxMindReader::from_source(bytes)
-            .map(ReaderSource::Memory)
-            .map_err(open_error)
+        reader_from_bytes(bytes).map(ReaderSource::Memory)
     }
 
     fn parse_lookup_ip(&self, env: &Env, ip_address: JsString<'_>) -> Result<IpAddr> {
@@ -553,16 +561,40 @@ fn create_reader(source: ReaderSource, cache_capacity: Option<u32>) -> NativeRea
 
 fn open_source(path: &str, mode: Option<&str>) -> Result<ReaderSource> {
     match mode.unwrap_or("mmap") {
-        "auto" | "mmap" => {
-            // SAFETY: The mapping is read-only. Callers should replace database files
-            // atomically rather than mutating an open file in place.
-            unsafe { MaxMindReader::open_mmap(Path::new(path)) }
-                .map(ReaderSource::Mmap)
-                .map_err(open_error)
-        }
-        "memory" | "buffer" => MaxMindReader::open_readfile(Path::new(path))
-            .map(ReaderSource::Memory)
-            .map_err(open_error),
+        "auto" | "mmap" => open_mmap_reader(Path::new(path)).map(ReaderSource::Mmap),
+        "memory" | "buffer" => open_memory_reader(Path::new(path)).map(ReaderSource::Memory),
         other => Err(invalid_arg(format!("Unsupported open mode: {other}"))),
     }
+}
+
+fn open_mmap_reader(path: &Path) -> Result<MaxMindReader<Mmap>> {
+    let file = File::open(path)
+        .map_err(MaxMindDbError::Io)
+        .map_err(open_error)?;
+    // SAFETY: The mapping is read-only. Callers should replace database files
+    // atomically rather than mutating an open file in place.
+    let mmap = unsafe { MmapOptions::new().map(&file) }
+        .map_err(MaxMindDbError::Mmap)
+        .map_err(open_error)?;
+    reject_gzip(mmap.as_ref())?;
+    MaxMindReader::from_source(mmap).map_err(open_error)
+}
+
+fn open_memory_reader(path: &Path) -> Result<MaxMindReader<Vec<u8>>> {
+    let bytes = fs::read(path)
+        .map_err(MaxMindDbError::Io)
+        .map_err(open_error)?;
+    reader_from_bytes(bytes)
+}
+
+fn reader_from_bytes(bytes: Vec<u8>) -> Result<MaxMindReader<Vec<u8>>> {
+    reject_gzip(&bytes)?;
+    MaxMindReader::from_source(bytes).map_err(open_error)
+}
+
+fn reject_gzip(bytes: &[u8]) -> Result<()> {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return Err(napi_error(ERR_GZIP_DB));
+    }
+    Ok(())
 }

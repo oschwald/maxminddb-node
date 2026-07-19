@@ -350,8 +350,18 @@ test('rejects gzip files in open', async () => {
   const gzipPath = path.join(dir, 'db.mmdb.gz');
   fs.writeFileSync(gzipPath, Buffer.from([0x1f, 0x8b, 0x08, 0x00]));
 
-  await assert.rejects(
-    () => maxmind.open(gzipPath),
+  for (const mode of [
+    maxmind.MODE_MMAP,
+    maxmind.MODE_MEMORY,
+    maxmind.MODE_BUFFER,
+  ]) {
+    await assert.rejects(
+      () => maxmind.open(gzipPath, { mode }),
+      /passing in a file in gzip format/
+    );
+  }
+  assert.throws(
+    () => new maxmind.Reader(fs.readFileSync(gzipPath)),
     /passing in a file in gzip format/
   );
 });

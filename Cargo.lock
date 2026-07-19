@@ -204,6 +204,7 @@ dependencies = [
  "ipnetwork",
  "lru",
  "maxminddb",
+ "memmap2",
  "napi",
  "napi-build",
  "napi-derive",
