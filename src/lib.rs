@@ -12,10 +12,7 @@ use crate::{
     errors::{invalid_arg, lookup_error, napi_error, open_error},
     ip::{parse_js_ip, parse_network, prefix_len_for_lookup},
     metadata::metadata_to_js,
-    networks::{
-        collect_networks_for_reader_to_js, collect_next_networks_page_to_js, make_within_options,
-        NetworkIter,
-    },
+    networks::{collect_next_networks_page_to_js, make_within_options, NetworkIter},
     paths::{compiled_path, parse_path, path_elements_from_owned, OwnedPathElement},
 };
 use maxminddb::{MaxMindDbError, Mmap, Reader as MaxMindReader, WithinOptions};
@@ -140,23 +137,6 @@ impl ReaderSource {
         match self {
             ReaderSource::Mmap(reader) => reader.metadata(),
             ReaderSource::Memory(reader) => reader.metadata(),
-        }
-    }
-
-    fn collect_networks_to_js<'env>(
-        &self,
-        env: &'env Env,
-        cidr: Option<ipnetwork::IpNetwork>,
-        options: WithinOptions,
-        property_names: &mut PropertyNameCache,
-    ) -> Result<Unknown<'env>> {
-        match self {
-            ReaderSource::Mmap(reader) => {
-                collect_networks_for_reader_to_js(env, reader, cidr, options, property_names)
-            }
-            ReaderSource::Memory(reader) => {
-                collect_networks_for_reader_to_js(env, reader, cidr, options, property_names)
-            }
         }
     }
 
@@ -417,28 +397,6 @@ impl NativeReader {
         collect_lookup_results(env, parsed_ips, |ip| {
             reader.lookup_path_to_js(env, ip, &path_elements, &mut self.property_names)
         })
-    }
-
-    #[napi]
-    pub fn networks<'env>(
-        &mut self,
-        env: &'env Env,
-        cidr: Option<String>,
-        include_aliased_networks: Option<bool>,
-        include_networks_without_data: Option<bool>,
-        skip_empty_values: Option<bool>,
-    ) -> Result<Unknown<'env>> {
-        let cidr = cidr.as_deref().map(parse_network).transpose()?;
-        let options = make_within_options(
-            include_aliased_networks,
-            include_networks_without_data,
-            skip_empty_values,
-        );
-        let reader = self
-            .reader
-            .as_ref()
-            .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        reader.collect_networks_to_js(env, cidr, options, &mut self.property_names)
     }
 
     #[napi(js_name = "networkCursor")]

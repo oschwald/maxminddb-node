@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native path automatically after collection, and survive watched reader swaps.
 - Simplified native reader state to use exclusive mutation directly, removing
   unnecessary runtime borrow checks and their impossible borrow-failure paths.
+- Stopped exposing undocumented native reader constructors and helpers from the
+  JavaScript entry point, leaving `nativeVersion()` as the supported diagnostic.
 
 ### Performance
 
@@ -52,6 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added focused unit coverage for the custom IPv4 parser, IPv4 prefix
   translation, signed path indexes, and inline path storage boundary.
+- Removed the unused eager native network collector; the public API continues
+  to use the lower-memory native cursor implementation.
 
 ## [0.2.1] - 2026-07-03
 

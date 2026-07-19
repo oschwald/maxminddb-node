@@ -578,7 +578,7 @@ function validate(ipAddress) {
 }
 
 module.exports = {
-  ...native,
+  nativeVersion: native.nativeVersion,
   NetworkIterator,
   PathLookup,
   Reader,

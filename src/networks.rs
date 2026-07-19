@@ -20,30 +20,6 @@ pub(crate) enum NetworkIter<'de> {
     Memory(Within<'de, Vec<u8>>),
 }
 
-pub(crate) fn collect_networks_for_reader_to_js<'env, S: AsRef<[u8]>>(
-    env: &'env Env,
-    reader: &MaxMindReader<S>,
-    cidr: Option<ipnetwork::IpNetwork>,
-    options: WithinOptions,
-    property_names: &mut PropertyNameCache,
-) -> Result<Unknown<'env>> {
-    let iter = match cidr {
-        Some(cidr) => reader.within(cidr, options).map_err(lookup_error)?,
-        None => reader.networks(options).map_err(lookup_error)?,
-    };
-    let mut records = Vec::new();
-    for result in iter {
-        records.push(network_lookup_to_js(
-            env,
-            result,
-            property_names,
-            &mut None,
-            None,
-        )?);
-    }
-    Array::from_vec(env, records)?.into_unknown(env)
-}
-
 impl<'de> NetworkIter<'de> {
     pub(crate) fn from_mmap(
         reader: &'de MaxMindReader<Mmap>,

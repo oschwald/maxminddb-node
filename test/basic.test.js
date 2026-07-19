@@ -15,6 +15,10 @@ const dataDir = path.join(
 
 test('loads native binding', () => {
   assert.equal(maxmind.nativeVersion(), '0.2.1');
+  assert.equal(maxmind.NativeReader, undefined);
+  assert.equal(maxmind.NativeNetworkCursor, undefined);
+  assert.equal(maxmind.openReader, undefined);
+  assert.equal(maxmind.openReaderAsync, undefined);
 });
 
 test('validates IP addresses', () => {
