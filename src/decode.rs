@@ -14,10 +14,18 @@ use std::{
     fmt, ptr,
 };
 
+#[derive(Clone, Copy)]
+struct JsDecodeContext {
+    env: sys::napi_env,
+    property_name_cache: *const RefCell<PropertyNameCache>,
+}
+
 thread_local! {
-    static JS_DECODE_ENV: Cell<sys::napi_env> = const { Cell::new(ptr::null_mut()) };
+    static JS_DECODE_CONTEXT: Cell<JsDecodeContext> = const { Cell::new(JsDecodeContext {
+        env: ptr::null_mut(),
+        property_name_cache: ptr::null(),
+    }) };
     static JS_DECODE_NAPI_ERROR: RefCell<Option<Error>> = const { RefCell::new(None) };
-    static JS_PROPERTY_NAME_CACHE: Cell<*const RefCell<PropertyNameCache>> = const { Cell::new(ptr::null()) };
 }
 
 struct RawJsValue(sys::napi_value);
@@ -29,32 +37,32 @@ impl RawJsValue {
 }
 
 struct JsDecodeEnvGuard {
-    previous_env: sys::napi_env,
+    previous_context: JsDecodeContext,
     previous_error: Option<Error>,
-    previous_property_name_cache: *const RefCell<PropertyNameCache>,
 }
 
 impl JsDecodeEnvGuard {
     fn enter(env: sys::napi_env, property_name_cache: &RefCell<PropertyNameCache>) -> Self {
-        let previous_env = JS_DECODE_ENV.with(|cell| cell.replace(env));
+        let previous_context = JS_DECODE_CONTEXT.with(|cell| {
+            cell.replace(JsDecodeContext {
+                env,
+                property_name_cache,
+            })
+        });
         let previous_error = JS_DECODE_NAPI_ERROR.with(|cell| cell.replace(None));
-        let previous_property_name_cache =
-            JS_PROPERTY_NAME_CACHE.with(|cell| cell.replace(property_name_cache));
         Self {
-            previous_env,
+            previous_context,
             previous_error,
-            previous_property_name_cache,
         }
     }
 }
 
 impl Drop for JsDecodeEnvGuard {
     fn drop(&mut self) {
-        JS_DECODE_ENV.with(|cell| cell.set(self.previous_env));
+        JS_DECODE_CONTEXT.with(|cell| cell.set(self.previous_context));
         JS_DECODE_NAPI_ERROR.with(|cell| {
             cell.replace(self.previous_error.take());
         });
-        JS_PROPERTY_NAME_CACHE.with(|cell| cell.set(self.previous_property_name_cache));
     }
 }
 
@@ -66,11 +74,11 @@ impl<'de> Deserialize<'de> for RawJsValue {
         // Node owns the UTF-8-to-JavaScript conversion and uses replacement
         // characters for malformed sequences. Ask maxminddb for the original
         // bytes so valid strings are not decoded once by Rust and again by V8.
-        maxminddb::deserialize_any_with_raw_strings(deserializer, RawJsValueVisitor)
+        RawJsValueSeed(js_decode_context()?).deserialize(deserializer)
     }
 }
 
-struct RawJsValueVisitor;
+struct RawJsValueVisitor(JsDecodeContext);
 
 impl<'de> Visitor<'de> for RawJsValueVisitor {
     type Value = RawJsValue;
@@ -83,7 +91,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_bool(env, value))
     }
 
@@ -91,7 +99,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_i32(env, value))
     }
 
@@ -99,7 +107,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_i64(env, value))
     }
 
@@ -107,7 +115,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_u32(env, u32::from(value)))
     }
 
@@ -115,7 +123,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_u32(env, value))
     }
 
@@ -123,7 +131,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_to_napi_value(env, value))
     }
 
@@ -131,7 +139,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_to_napi_value(env, value))
     }
 
@@ -139,7 +147,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_f64(env, f64::from(value)))
     }
 
@@ -147,7 +155,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_f64(env, value))
     }
 
@@ -155,7 +163,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_string(env, value))
     }
 
@@ -163,7 +171,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_string(env, value))
     }
 
@@ -171,7 +179,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_string(env, &value))
     }
 
@@ -179,7 +187,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_buffer(env, value))
     }
 
@@ -187,7 +195,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_buffer(env, value))
     }
 
@@ -195,7 +203,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_buffer(env, &value))
     }
 
@@ -203,7 +211,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_null(env))
     }
 
@@ -211,7 +219,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_null(env))
     }
 
@@ -219,43 +227,54 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     where
         D: Deserializer<'de>,
     {
-        RawJsValue::deserialize(deserializer)
+        RawJsValueSeed(self.0).deserialize(deserializer)
     }
 
     fn visit_newtype_struct<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_bytes(RawJsStringVisitor)
+        deserializer.deserialize_bytes(RawJsStringVisitor(self.0))
     }
 
     fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
     where
         A: SeqAccess<'de>,
     {
-        let env = js_decode_env()?;
-        let mut values = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-        while let Some(value) = seq.next_element_seed(RawJsValueSeed)? {
-            values.push(value);
+        let context = self.0;
+        let expected_length = seq.size_hint().unwrap_or(0);
+        let array = napi_result_to_de(raw_array(context.env, expected_length))?;
+        let mut actual_length = 0;
+        while let Some(value) = seq.next_element_seed(RawJsValueSeed(context))? {
+            napi_result_to_de(raw_array_set(context.env, array.0, actual_length, value))?;
+            actual_length += 1;
         }
-        napi_result_to_de(raw_array(env, values))
+        if actual_length != expected_length {
+            napi_result_to_de(raw_array_set_length(context.env, array.0, actual_length))?;
+        }
+        Ok(array)
     }
 
     fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
-        let env = js_decode_env()?;
-        let mut values = Vec::with_capacity(map.size_hint().unwrap_or(0));
+        let context = self.0;
+        let object = napi_result_to_de(raw_object(context.env))?;
+        let mut descriptors = Vec::with_capacity(map.size_hint().unwrap_or(0));
         while let Some(key) = map.next_key_seed(RawJsPropertyNameSeed)? {
-            let value = map.next_value_seed(RawJsValueSeed)?;
-            values.push((key, value));
+            let value = map.next_value_seed(RawJsValueSeed(context))?;
+            descriptors.push(napi_result_to_de(raw_property_descriptor(
+                context,
+                key.as_ref(),
+                value,
+            ))?);
         }
-        napi_result_to_de(raw_object_entries(env, values))
+        napi_result_to_de(raw_define_properties(context.env, object, descriptors))
     }
 }
 
-struct RawJsStringVisitor;
+struct RawJsStringVisitor(JsDecodeContext);
 
 impl<'de> Visitor<'de> for RawJsStringVisitor {
     type Value = RawJsValue;
@@ -268,7 +287,7 @@ impl<'de> Visitor<'de> for RawJsStringVisitor {
     where
         E: de::Error,
     {
-        let env = js_decode_env()?;
+        let env = self.0.env;
         napi_result_to_de(raw_string_bytes(env, value))
     }
 
@@ -352,7 +371,7 @@ impl<'de> Visitor<'de> for RawJsPropertyNameVisitor {
     }
 }
 
-struct RawJsValueSeed;
+struct RawJsValueSeed(JsDecodeContext);
 
 impl<'de> DeserializeSeed<'de> for RawJsValueSeed {
     type Value = RawJsValue;
@@ -361,7 +380,7 @@ impl<'de> DeserializeSeed<'de> for RawJsValueSeed {
     where
         D: Deserializer<'de>,
     {
-        RawJsValue::deserialize(deserializer)
+        maxminddb::deserialize_any_with_raw_strings(deserializer, RawJsValueVisitor(self.0))
     }
 }
 
@@ -426,17 +445,17 @@ pub(crate) fn lookup_result_record_uncached_to_js<'env, S: AsRef<[u8]>>(
     }
 }
 
-fn js_decode_env<E>() -> std::result::Result<sys::napi_env, E>
+fn js_decode_context<E>() -> std::result::Result<JsDecodeContext, E>
 where
     E: de::Error,
 {
-    let env = JS_DECODE_ENV.with(Cell::get);
-    if env.is_null() {
+    let context = JS_DECODE_CONTEXT.with(Cell::get);
+    if context.env.is_null() || context.property_name_cache.is_null() {
         return Err(E::custom(
             "JavaScript decode environment was not initialized",
         ));
     }
-    Ok(env)
+    Ok(context)
 }
 
 fn napi_result_to_de<T, E>(result: Result<T>) -> std::result::Result<T, E>
@@ -569,15 +588,10 @@ fn raw_js_string_bytes(env: sys::napi_env, bytes: &[u8]) -> Result<sys::napi_val
 }
 
 fn raw_property_descriptor_name(
-    env: sys::napi_env,
+    context: JsDecodeContext,
     property_name: &[u8],
 ) -> Result<(*const c_char, sys::napi_value)> {
-    let cache = JS_PROPERTY_NAME_CACHE.with(Cell::get);
-    if cache.is_null() {
-        return raw_js_string_bytes(env, property_name).map(|name| (ptr::null(), name));
-    }
-
-    if let Some(utf8name) = unsafe { &*cache }
+    if let Some(utf8name) = unsafe { &*context.property_name_cache }
         .try_borrow_mut()
         .map_err(|_| napi_error("property name cache already borrowed"))?
         .get(property_name)
@@ -585,7 +599,7 @@ fn raw_property_descriptor_name(
         return Ok((utf8name, ptr::null_mut()));
     }
 
-    raw_js_string_bytes(env, property_name).map(|name| (ptr::null(), name))
+    raw_js_string_bytes(context.env, property_name).map(|name| (ptr::null(), name))
 }
 
 fn raw_buffer(env: sys::napi_env, bytes: &[u8]) -> Result<RawJsValue> {
@@ -604,60 +618,79 @@ fn raw_buffer(env: sys::napi_env, bytes: &[u8]) -> Result<RawJsValue> {
     Ok(RawJsValue(value))
 }
 
-fn raw_array(env: sys::napi_env, values: Vec<RawJsValue>) -> Result<RawJsValue> {
+fn raw_array(env: sys::napi_env, length: usize) -> Result<RawJsValue> {
     let mut array = ptr::null_mut();
     check_status!(
-        unsafe { sys::napi_create_array_with_length(env, values.len(), &mut array) },
+        unsafe { sys::napi_create_array_with_length(env, length, &mut array) },
         "Failed to create array",
     )?;
-
-    for (index, value) in values.into_iter().enumerate() {
-        let index =
-            u32::try_from(index).map_err(|_| napi_error("array index exceeds u32 range"))?;
-        check_status!(
-            unsafe { sys::napi_set_element(env, array, index, value.0) },
-            "Failed to set array element",
-        )?;
-    }
-
     Ok(RawJsValue(array))
 }
 
-fn raw_object_entries(
+fn raw_array_set(
     env: sys::napi_env,
-    values: Vec<(Cow<'_, [u8]>, RawJsValue)>,
-) -> Result<RawJsValue> {
+    array: sys::napi_value,
+    index: usize,
+    value: RawJsValue,
+) -> Result<()> {
+    let index = u32::try_from(index).map_err(|_| napi_error("array index exceeds u32 range"))?;
+    check_status!(
+        unsafe { sys::napi_set_element(env, array, index, value.0) },
+        "Failed to set array element",
+    )
+}
+
+fn raw_array_set_length(env: sys::napi_env, array: sys::napi_value, length: usize) -> Result<()> {
+    let length = u32::try_from(length).map_err(|_| napi_error("array length exceeds u32 range"))?;
+    let length = raw_u32(env, length)?;
+    check_status!(
+        unsafe { sys::napi_set_named_property(env, array, c"length".as_ptr(), length.0) },
+        "Failed to set array length",
+    )
+}
+
+fn raw_object(env: sys::napi_env) -> Result<RawJsValue> {
     let mut object = ptr::null_mut();
     check_status!(
         unsafe { sys::napi_create_object(env, &mut object) },
         "Failed to create object",
     )?;
+    Ok(RawJsValue(object))
+}
 
-    let mut descriptors = Vec::with_capacity(values.len());
-    for (key, value) in values {
-        let (utf8name, name) = raw_property_descriptor_name(env, key.as_ref())?;
-        descriptors.push(sys::napi_property_descriptor {
-            utf8name,
-            name,
-            method: None,
-            getter: None,
-            setter: None,
-            value: value.0,
-            attributes: sys::PropertyAttributes::writable
-                | sys::PropertyAttributes::enumerable
-                | sys::PropertyAttributes::configurable,
-            data: ptr::null_mut(),
-        });
-    }
+fn raw_property_descriptor(
+    context: JsDecodeContext,
+    key: &[u8],
+    value: RawJsValue,
+) -> Result<sys::napi_property_descriptor> {
+    let (utf8name, name) = raw_property_descriptor_name(context, key)?;
+    Ok(sys::napi_property_descriptor {
+        utf8name,
+        name,
+        method: None,
+        getter: None,
+        setter: None,
+        value: value.0,
+        attributes: sys::PropertyAttributes::writable
+            | sys::PropertyAttributes::enumerable
+            | sys::PropertyAttributes::configurable,
+        data: ptr::null_mut(),
+    })
+}
 
+fn raw_define_properties(
+    env: sys::napi_env,
+    object: RawJsValue,
+    descriptors: Vec<sys::napi_property_descriptor>,
+) -> Result<RawJsValue> {
     if !descriptors.is_empty() {
         check_status!(
             unsafe {
-                sys::napi_define_properties(env, object, descriptors.len(), descriptors.as_ptr())
+                sys::napi_define_properties(env, object.0, descriptors.len(), descriptors.as_ptr())
             },
             "Failed to define properties",
         )?;
     }
 
-    Ok(RawJsValue(object))
+    Ok(object)
 }

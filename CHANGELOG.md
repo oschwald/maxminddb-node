@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   avoiding repeated decoding during large network walks.
 - Format network strings on the stack and construct network-result pairs in
   place, avoiding two heap allocations per iterated network.
+- Construct decoded arrays and objects in a single pass and carry JavaScript
+  decode context through nested values, reducing allocations and TLS access.
 
 ## [0.2.1] - 2026-07-03
 
