@@ -193,6 +193,11 @@ class NetworkIterator {
     return this;
   }
 
+  return() {
+    this.close();
+    return { done: true, value: undefined };
+  }
+
   next() {
     if (this._done) {
       return { done: true, value: undefined };

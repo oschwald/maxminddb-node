@@ -203,6 +203,7 @@ export declare class NetworkIterator<T = Response>
   implements IterableIterator<[string, T | null]> {
   readonly path: ReadonlyArray<string | number> | null;
   next(): IteratorResult<[string, T | null]>;
+  return(): IteratorReturnResult<undefined>;
   nextPage(pageSize?: number): Array<[string, T | null]>;
   pages(pageSize?: number): IterableIterator<Array<[string, T | null]>>;
   close(): void;

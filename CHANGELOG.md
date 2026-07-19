@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native conversion behavior and is represented with replacement characters.
 - `MODE_BUFFER` now uses the same native owned-memory reader as `MODE_MEMORY`;
   the constant remains available as a compatibility alias.
+- Network iterators now close their native cursor when a `for...of` loop exits
+  early.
 
 ### Performance
 

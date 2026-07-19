@@ -172,6 +172,19 @@ test('iterates networks within a CIDR', async () => {
   ]);
 });
 
+test('closes network cursors when iteration stops early', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const iterator = reader.networks();
+
+  for (const _record of iterator) {
+    break;
+  }
+
+  assert.equal(iterator._done, true);
+  assert.deepEqual(iterator.next(), { done: true, value: undefined });
+  reader.close();
+});
+
 test('selectively decodes paths while iterating networks', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
   const iterator = reader.withinPath(
