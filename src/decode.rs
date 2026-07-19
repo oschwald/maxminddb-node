@@ -17,13 +17,13 @@ use std::{
 #[derive(Clone, Copy)]
 struct JsDecodeContext {
     env: sys::napi_env,
-    property_name_cache: *const RefCell<PropertyNameCache>,
+    property_name_cache: *mut PropertyNameCache,
 }
 
 thread_local! {
     static JS_DECODE_CONTEXT: Cell<JsDecodeContext> = const { Cell::new(JsDecodeContext {
         env: ptr::null_mut(),
-        property_name_cache: ptr::null(),
+        property_name_cache: ptr::null_mut(),
     }) };
     static JS_DECODE_NAPI_ERROR: RefCell<Option<Error>> = const { RefCell::new(None) };
 }
@@ -42,7 +42,7 @@ struct JsDecodeEnvGuard {
 }
 
 impl JsDecodeEnvGuard {
-    fn enter(env: sys::napi_env, property_name_cache: &RefCell<PropertyNameCache>) -> Self {
+    fn enter(env: sys::napi_env, property_name_cache: &mut PropertyNameCache) -> Self {
         let previous_context = JS_DECODE_CONTEXT.with(|cell| {
             cell.replace(JsDecodeContext {
                 env,
@@ -387,18 +387,15 @@ impl<'de> DeserializeSeed<'de> for RawJsValueSeed {
 pub(crate) fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
-    cache: &RefCell<Option<RecordCache>>,
-    property_names: &RefCell<PropertyNameCache>,
+    cache: &mut Option<RecordCache>,
+    property_names: &mut PropertyNameCache,
 ) -> Result<Unknown<'env>> {
     let Some(offset) = result.offset() else {
         return Null.into_unknown(env);
     };
 
     {
-        let mut cache_guard = cache
-            .try_borrow_mut()
-            .map_err(|_| napi_error("cache already borrowed"))?;
-        let Some(record_cache) = cache_guard.as_mut() else {
+        let Some(record_cache) = cache.as_mut() else {
             return lookup_result_record_uncached_to_js(env, result, property_names);
         };
 
@@ -408,11 +405,7 @@ pub(crate) fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
     }
 
     let value = lookup_result_record_uncached_to_js(env, result, property_names)?;
-    if let Some(record_cache) = cache
-        .try_borrow_mut()
-        .map_err(|_| napi_error("cache already borrowed"))?
-        .as_mut()
-    {
+    if let Some(record_cache) = cache.as_mut() {
         record_cache.put(env, offset, &value)?;
     }
     Ok(value)
@@ -422,7 +415,7 @@ pub(crate) fn lookup_result_path_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
     path: &[maxminddb::PathElement<'_>],
-    property_names: &RefCell<PropertyNameCache>,
+    property_names: &mut PropertyNameCache,
 ) -> Result<Unknown<'env>> {
     let _guard = JsDecodeEnvGuard::enter(env.raw(), property_names);
     match result.decode_path::<RawJsValue>(path) {
@@ -435,7 +428,7 @@ pub(crate) fn lookup_result_path_to_js<'env, S: AsRef<[u8]>>(
 pub(crate) fn lookup_result_record_uncached_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
-    property_names: &RefCell<PropertyNameCache>,
+    property_names: &mut PropertyNameCache,
 ) -> Result<Unknown<'env>> {
     let _guard = JsDecodeEnvGuard::enter(env.raw(), property_names);
     match result.decode::<RawJsValue>() {
@@ -591,11 +584,7 @@ fn raw_property_descriptor_name(
     context: JsDecodeContext,
     property_name: &[u8],
 ) -> Result<(*const c_char, sys::napi_value)> {
-    if let Some(utf8name) = unsafe { &*context.property_name_cache }
-        .try_borrow_mut()
-        .map_err(|_| napi_error("property name cache already borrowed"))?
-        .get(property_name)
-    {
+    if let Some(utf8name) = unsafe { &mut *context.property_name_cache }.get(property_name) {
         return Ok((utf8name, ptr::null_mut()));
     }
 

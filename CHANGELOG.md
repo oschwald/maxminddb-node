@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   early.
 - Compiled `PathLookup` instances can be closed explicitly, release their
   native path automatically after collection, and survive watched reader swaps.
+- Simplified native reader state to use exclusive mutation directly, removing
+  unnecessary runtime borrow checks and their impossible borrow-failure paths.
 
 ### Performance
 

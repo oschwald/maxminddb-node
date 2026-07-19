@@ -25,7 +25,7 @@ pub(crate) fn collect_networks_for_reader_to_js<'env, S: AsRef<[u8]>>(
     reader: &MaxMindReader<S>,
     cidr: Option<ipnetwork::IpNetwork>,
     options: WithinOptions,
-    property_names: &std::cell::RefCell<PropertyNameCache>,
+    property_names: &mut PropertyNameCache,
 ) -> Result<Unknown<'env>> {
     let iter = match cidr {
         Some(cidr) => reader.within(cidr, options).map_err(lookup_error)?,
@@ -74,7 +74,7 @@ impl<'de> NetworkIter<'de> {
     fn next_record_to_js<'env>(
         &mut self,
         env: &'env Env,
-        property_names: &std::cell::RefCell<PropertyNameCache>,
+        property_names: &mut PropertyNameCache,
         records_by_offset: &mut Option<HashMap<usize, Unknown<'env>>>,
         path: Option<&[maxminddb::PathElement<'_>]>,
     ) -> Result<Option<Unknown<'env>>> {
@@ -98,7 +98,7 @@ impl<'de> NetworkIter<'de> {
 fn network_lookup_to_js<'env, 'de, S: AsRef<[u8]>>(
     env: &'env Env,
     result: std::result::Result<LookupResult<'de, S>, MaxMindDbError>,
-    property_names: &std::cell::RefCell<PropertyNameCache>,
+    property_names: &mut PropertyNameCache,
     records_by_offset: &mut Option<HashMap<usize, Unknown<'env>>>,
     path: Option<&[maxminddb::PathElement<'_>]>,
 ) -> Result<Unknown<'env>> {
@@ -131,7 +131,7 @@ pub(crate) fn collect_next_networks_page_to_js<'env, 'de>(
     env: &'env Env,
     iter: &mut NetworkIter<'de>,
     limit: usize,
-    property_names: &std::cell::RefCell<PropertyNameCache>,
+    property_names: &mut PropertyNameCache,
     cache_records: bool,
     path: Option<&[maxminddb::PathElement<'_>]>,
 ) -> Result<(Unknown<'env>, bool)> {
@@ -152,7 +152,7 @@ pub(crate) fn collect_next_networks_page_to_js<'env, 'de>(
 fn network_record_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     lookup: &LookupResult<'_, S>,
-    property_names: &std::cell::RefCell<PropertyNameCache>,
+    property_names: &mut PropertyNameCache,
     path: Option<&[maxminddb::PathElement<'_>]>,
 ) -> Result<Unknown<'env>> {
     if let Some(path) = path {

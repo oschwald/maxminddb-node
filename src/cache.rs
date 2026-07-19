@@ -1,11 +1,9 @@
-use crate::errors::napi_error;
 use lru::LruCache;
 use napi::{
     bindgen_prelude::{Env, JsObjectValue, Object, Unknown},
     Result, UnknownRef, ValueType,
 };
 use std::{
-    cell::RefCell,
     collections::HashMap,
     ffi::{c_char, CString},
     num::NonZeroUsize,
@@ -135,11 +133,8 @@ impl RecordCache {
 
 pub(crate) fn cache_stats_to_js<'env>(
     env: &'env Env,
-    cache: &RefCell<Option<RecordCache>>,
+    cache: &Option<RecordCache>,
 ) -> Result<Object<'env>> {
-    let cache = cache
-        .try_borrow()
-        .map_err(|_| napi_error("cache already borrowed"))?;
     let mut object = Object::new(env)?;
 
     if let Some(cache) = cache.as_ref() {
