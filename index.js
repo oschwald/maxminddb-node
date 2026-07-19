@@ -252,13 +252,14 @@ class PathLookup {
 }
 
 class NetworkIterator {
-  constructor(reader, cidr, options = {}) {
+  constructor(reader, cidr, options = {}, path = null) {
     const [networkOptions, pageSize] = normalizeNetworkIteratorOptions(options);
-    this._cursor = reader._reader.networkCursor(cidr, ...networkOptions);
+    this._cursor = reader._reader.networkCursor(cidr, ...networkOptions, path);
     this._pageSize = pageSize;
     this._page = [];
     this._index = 0;
     this._done = false;
+    this.path = path == null ? null : Object.freeze([...path]);
   }
 
   [Symbol.iterator]() {
@@ -499,6 +500,14 @@ class Reader {
 
   within(cidr, options = {}) {
     return new NetworkIterator(this, cidr, options);
+  }
+
+  networksPath(path, options = {}) {
+    return new NetworkIterator(this, null, options, path);
+  }
+
+  withinPath(cidr, path, options = {}) {
+    return new NetworkIterator(this, cidr, options, path);
   }
 
   *networkPages(options = {}) {

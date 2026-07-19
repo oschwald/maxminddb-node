@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `networksPath()` and `withinPath()` for selectively decoding one value
+  while iterating database networks.
+
 ### Changed
 
 - Updated the Rust `maxminddb` dependency to 0.30.0, inheriting safer corrupt

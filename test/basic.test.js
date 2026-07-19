@@ -173,6 +173,20 @@ test('iterates networks within a CIDR', async () => {
   ]);
 });
 
+test('selectively decodes paths while iterating networks', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const iterator = reader.withinPath(
+    '81.2.69.142/31',
+    ['country', 'iso_code'],
+    { pageSize: 1 }
+  );
+
+  assert.deepEqual(iterator.path, ['country', 'iso_code']);
+  assert(Object.isFrozen(iterator.path));
+  assert.deepEqual([...iterator], [['81.2.69.142/31', 'GB']]);
+  reader.close();
+});
+
 test('reuses shared network records only when caching is enabled', async () => {
   const database = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
   const cached = await maxmind.open(database);

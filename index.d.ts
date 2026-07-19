@@ -199,8 +199,9 @@ export declare class PathLookup<TValue = unknown> {
   getMany(ipAddresses: ReadonlyArray<string>): Array<TValue | null>;
 }
 
-export declare class NetworkIterator<T extends Response = Response>
+export declare class NetworkIterator<T = Response>
   implements IterableIterator<[string, T | null]> {
+  readonly path: ReadonlyArray<string | number> | null;
   next(): IteratorResult<[string, T | null]>;
   nextPage(pageSize?: number): Array<[string, T | null]>;
   pages(pageSize?: number): IterableIterator<Array<[string, T | null]>>;
@@ -236,6 +237,15 @@ export declare class Reader<T extends Response = Response> {
   ): unknown[];
   networks(options?: NetworkPagesOptions): NetworkIterator<T>;
   within(cidr: string, options?: NetworkPagesOptions): NetworkIterator<T>;
+  networksPath<TValue = unknown>(
+    path: ReadonlyArray<string | number>,
+    options?: NetworkPagesOptions,
+  ): NetworkIterator<TValue>;
+  withinPath<TValue = unknown>(
+    cidr: string,
+    path: ReadonlyArray<string | number>,
+    options?: NetworkPagesOptions,
+  ): NetworkIterator<TValue>;
   networkPages(
     options?: NetworkPagesOptions,
   ): IterableIterator<Array<[string, T | null]>>;

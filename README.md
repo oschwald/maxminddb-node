@@ -91,6 +91,13 @@ for (const page of reader.withinPages('81.2.69.0/24', { pageSize: 100 })) {
     console.log(network, record);
   }
 }
+
+for (const [network, country] of reader.withinPath(
+  '81.2.69.0/24',
+  ['country', 'iso_code']
+)) {
+  console.log(network, country);
+}
 ```
 
 Path elements are strings for map keys and numbers for array indexes. Negative
@@ -105,6 +112,8 @@ you can batch IPs. They cross the native boundary once for the whole batch and
 are significantly faster than calling `get()` in a JavaScript loop.
 
 `networks()` and `within()` return lazy iterators backed by native cursors.
+Use `networksPath()` or `withinPath()` to decode only a selected field while
+walking networks.
 For large network walks, use `networkPages()`, `withinPages()`, or
 `NetworkIterator#nextPage()` to cross the native boundary once per page rather
 than once per network.

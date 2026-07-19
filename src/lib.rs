@@ -163,6 +163,7 @@ pub struct NativeNetworkCursor {
     iter: Option<NetworkCursorCell>,
     property_names: RefCell<PropertyNameCache>,
     cache_records: bool,
+    path: Option<Vec<OwnedPathElement>>,
 }
 
 impl Drop for NativeNetworkCursor {
@@ -179,6 +180,7 @@ impl NativeNetworkCursor {
             return Err(invalid_arg("page size should be a positive 32-bit integer"));
         }
 
+        let path_elements = self.path.as_deref().map(path_elements_from_owned);
         let Some(iter) = self.iter.as_mut() else {
             return Array::from_vec(env, Vec::<Unknown<'env>>::new())?.into_unknown(env);
         };
@@ -189,6 +191,7 @@ impl NativeNetworkCursor {
                 limit as usize,
                 &self.property_names,
                 self.cache_records,
+                path_elements.as_deref(),
             )
         })?;
         if is_empty {
@@ -412,8 +415,10 @@ impl NativeReader {
         include_aliased_networks: Option<bool>,
         include_networks_without_data: Option<bool>,
         skip_empty_values: Option<bool>,
+        path: Option<Vec<Either<String, i64>>>,
     ) -> Result<NativeNetworkCursor> {
         let cidr = cidr.as_deref().map(parse_network).transpose()?;
+        let path = path.map(parse_path).transpose()?;
         let options = make_within_options(
             include_aliased_networks,
             include_networks_without_data,
@@ -430,6 +435,7 @@ impl NativeReader {
             iter: Some(iter),
             property_names: RefCell::new(PropertyNameCache::new()),
             cache_records: self.cache.borrow().is_some(),
+            path,
         })
     }
 

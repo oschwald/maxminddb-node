@@ -43,6 +43,8 @@ async function checkTypes() {
     generatedPage[0]?.[1]?.country?.iso_code;
   }
   opened.networkPages({ pageSize: 100 }).next();
+  opened.networksPath<string>(['country', 'iso_code']).next();
+  opened.withinPath<string>('8.8.8.0/24', ['country', 'iso_code']).next();
 
   const fromBuffer = new Reader<CityResponse>(Buffer.alloc(0));
   fromBuffer.close();

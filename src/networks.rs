@@ -1,6 +1,6 @@
 use crate::{
     cache::PropertyNameCache,
-    decode::{lookup_result_record_uncached_to_js, string_bytes_to_js},
+    decode::{lookup_result_path_to_js, lookup_result_record_uncached_to_js, string_bytes_to_js},
     errors::{lookup_error, napi_error},
 };
 use arrayvec::ArrayString;
@@ -38,6 +38,7 @@ pub(crate) fn collect_networks_for_reader_to_js<'env, S: AsRef<[u8]>>(
             result,
             property_names,
             &mut None,
+            None,
         )?);
     }
     Array::from_vec(env, records)?.into_unknown(env)
@@ -75,15 +76,20 @@ impl<'de> NetworkIter<'de> {
         env: &'env Env,
         property_names: &std::cell::RefCell<PropertyNameCache>,
         records_by_offset: &mut Option<HashMap<usize, Unknown<'env>>>,
+        path: Option<&[maxminddb::PathElement<'_>]>,
     ) -> Result<Option<Unknown<'env>>> {
         match self {
             Self::Mmap(iter) => iter
                 .next()
-                .map(|result| network_lookup_to_js(env, result, property_names, records_by_offset))
+                .map(|result| {
+                    network_lookup_to_js(env, result, property_names, records_by_offset, path)
+                })
                 .transpose(),
             Self::Memory(iter) => iter
                 .next()
-                .map(|result| network_lookup_to_js(env, result, property_names, records_by_offset))
+                .map(|result| {
+                    network_lookup_to_js(env, result, property_names, records_by_offset, path)
+                })
                 .transpose(),
         }
     }
@@ -94,6 +100,7 @@ fn network_lookup_to_js<'env, 'de, S: AsRef<[u8]>>(
     result: std::result::Result<LookupResult<'de, S>, MaxMindDbError>,
     property_names: &std::cell::RefCell<PropertyNameCache>,
     records_by_offset: &mut Option<HashMap<usize, Unknown<'env>>>,
+    path: Option<&[maxminddb::PathElement<'_>]>,
 ) -> Result<Unknown<'env>> {
     let lookup = result.map_err(lookup_error)?;
     let network = lookup.network().map_err(lookup_error)?;
@@ -107,12 +114,12 @@ fn network_lookup_to_js<'env, 'de, S: AsRef<[u8]>>(
         if let Some(record) = records_by_offset.get(&offset) {
             *record
         } else {
-            let record = lookup_result_record_uncached_to_js(env, &lookup, property_names)?;
+            let record = network_record_to_js(env, &lookup, property_names, path)?;
             records_by_offset.insert(offset, record);
             record
         }
     } else {
-        lookup_result_record_uncached_to_js(env, &lookup, property_names)?
+        network_record_to_js(env, &lookup, property_names, path)?
     };
     let mut pair = env.create_array(2)?;
     pair.set(0, network)?;
@@ -126,11 +133,13 @@ pub(crate) fn collect_next_networks_page_to_js<'env, 'de>(
     limit: usize,
     property_names: &std::cell::RefCell<PropertyNameCache>,
     cache_records: bool,
+    path: Option<&[maxminddb::PathElement<'_>]>,
 ) -> Result<(Unknown<'env>, bool)> {
     let mut records = Vec::with_capacity(limit.min(MAX_INITIAL_NETWORK_PAGE_CAPACITY));
     let mut records_by_offset = cache_records.then(HashMap::new);
     for _ in 0..limit {
-        let Some(record) = iter.next_record_to_js(env, property_names, &mut records_by_offset)?
+        let Some(record) =
+            iter.next_record_to_js(env, property_names, &mut records_by_offset, path)?
         else {
             break;
         };
@@ -138,6 +147,19 @@ pub(crate) fn collect_next_networks_page_to_js<'env, 'de>(
     }
     let is_empty = records.is_empty();
     Ok((Array::from_vec(env, records)?.into_unknown(env)?, is_empty))
+}
+
+fn network_record_to_js<'env, S: AsRef<[u8]>>(
+    env: &'env Env,
+    lookup: &LookupResult<'_, S>,
+    property_names: &std::cell::RefCell<PropertyNameCache>,
+    path: Option<&[maxminddb::PathElement<'_>]>,
+) -> Result<Unknown<'env>> {
+    if let Some(path) = path {
+        lookup_result_path_to_js(env, lookup, path, property_names)
+    } else {
+        lookup_result_record_uncached_to_js(env, lookup, property_names)
+    }
 }
 
 pub(crate) fn make_within_options(
