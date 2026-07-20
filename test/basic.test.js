@@ -201,6 +201,55 @@ test('looks up multi-field projections', async () => {
   assert.deepEqual(reader.getManyPaths([], paths), []);
 });
 
+test('allows reentrant reader access while extracting batch inputs', async () => {
+  const database = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  const operations = [
+    (reader, ips) => reader.getMany(ips),
+    (reader, ips) => reader.getManyPath(ips, ['country', 'iso_code']),
+    (reader, ips) =>
+      reader.getManyPaths(ips, [
+        ['country', 'iso_code'],
+        ['continent', 'code'],
+      ]),
+    (reader, ips) => {
+      const lookup = reader.path(['country', 'iso_code']);
+      try {
+        return lookup.getMany(ips);
+      } finally {
+        lookup.close();
+      }
+    },
+  ];
+
+  for (const operation of operations) {
+    const reader = await maxmind.open(database);
+    let nestedCountry;
+    const ips = [];
+    Object.defineProperty(ips, 0, {
+      get() {
+        nestedCountry = reader.get('175.16.199.1').country.iso_code;
+        return '81.2.69.142';
+      },
+    });
+    ips.length = 1;
+
+    assert.equal(operation(reader, ips).length, 1);
+    assert.equal(nestedCountry, 'CN');
+    reader.close();
+  }
+
+  const reader = await maxmind.open(database);
+  const ips = [];
+  Object.defineProperty(ips, 0, {
+    get() {
+      reader.close();
+      return '81.2.69.142';
+    },
+  });
+  ips.length = 1;
+  assert.throws(() => reader.getMany(ips), /closed MaxMind DB/);
+});
+
 test('iterates networks within a CIDR', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
   const records = [...reader.within('81.2.69.142/31')];

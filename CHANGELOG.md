@@ -30,8 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   early.
 - Compiled `PathLookup` instances can be closed explicitly, release their
   native path automatically after collection, and survive watched reader swaps.
-- Simplified native reader state to use exclusive mutation directly, removing
-  unnecessary runtime borrow checks and their impossible borrow-failure paths.
+- Consolidated mutable native reader state behind one runtime borrow, keeping
+  reentrant JavaScript access safe without per-field borrow checks.
 - Stopped exposing undocumented native reader constructors and helpers from the
   JavaScript entry point, leaving `nativeVersion()` as the supported diagnostic.
 

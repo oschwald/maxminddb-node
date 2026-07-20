@@ -25,10 +25,18 @@ use napi::{
 };
 use napi_derive::napi;
 use std::{
-    collections::HashMap, fs::File, io::Read, net::IpAddr, num::NonZeroUsize, path::Path, sync::Arc,
+    cell::{Ref, RefCell, RefMut},
+    collections::HashMap,
+    fs::File,
+    io::Read,
+    net::IpAddr,
+    num::NonZeroUsize,
+    path::Path,
+    sync::Arc,
 };
 
 const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
+const ERR_REENTRANT_DB: &str = "MaxMind DB reader is already in use.";
 const ERR_GZIP_DB: &str =
     "Looks like you are passing in a file in gzip format, please use mmdb database instead.";
 
@@ -178,6 +186,10 @@ impl ReaderSource {
 
 #[napi(js_name = "NativeReader", custom_finalize)]
 pub struct NativeReader {
+    state: RefCell<NativeReaderState>,
+}
+
+struct NativeReaderState {
     reader: Option<Arc<ReaderSource>>,
     cache: Option<RecordCache>,
     property_names: PropertyNameCache,
@@ -243,187 +255,194 @@ impl NativeReader {
     }
 
     #[napi]
-    pub fn load(&mut self, env: &Env, database: Buffer) -> Result<()> {
+    pub fn load(&self, env: &Env, database: Buffer) -> Result<()> {
         let new_reader = Self::reader_from_bytes(database.as_ref().to_vec())?;
         self.replace_reader(env, new_reader)
     }
 
     #[napi(js_name = "reloadFromFile")]
-    pub fn reload_from_file(
-        &mut self,
-        env: &Env,
-        path: String,
-        mode: Option<String>,
-    ) -> Result<()> {
+    pub fn reload_from_file(&self, env: &Env, path: String, mode: Option<String>) -> Result<()> {
         let new_reader = open_source(&path, mode.as_deref())?;
         self.replace_reader(env, new_reader)
     }
 
     #[napi(getter)]
     pub fn closed(&self) -> Result<bool> {
-        Ok(self.reader.is_none())
+        Ok(self.state()?.reader.is_none())
     }
 
     #[napi]
-    pub fn close(&mut self, env: &Env) -> Result<()> {
-        self.clear_record_cache(env)?;
-        self.clear_property_names(env)?;
-        self.paths.clear();
-        self.reader = None;
+    pub fn close(&self, env: &Env) -> Result<()> {
+        let mut state = self.state_mut()?;
+        state.clear_record_cache(env)?;
+        state.clear_property_names();
+        state.paths.clear();
+        state.reader = None;
         Ok(())
     }
 
     #[napi(js_name = "clearCache")]
-    pub fn clear_cache(&mut self, env: &Env) -> Result<()> {
-        self.clear_record_cache(env)
+    pub fn clear_cache(&self, env: &Env) -> Result<()> {
+        self.state_mut()?.clear_record_cache(env)
     }
 
     #[napi(js_name = "cacheStats")]
     pub fn cache_stats<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
-        cache_stats_to_js(env, &self.cache)
+        cache_stats_to_js(env, &self.state()?.cache)
     }
 
     #[napi]
-    pub fn get<'env>(
-        &mut self,
-        env: &'env Env,
-        ip_address: JsString<'env>,
-    ) -> Result<Unknown<'env>> {
-        let ip = self.parse_lookup_ip(env, ip_address)?;
-        let reader = self
+    pub fn get<'env>(&self, env: &'env Env, ip_address: JsString<'env>) -> Result<Unknown<'env>> {
+        let ip = parse_js_ip(env, ip_address)?;
+        let mut state = self.lookup_state(ip)?;
+        let state = &mut *state;
+        let reader = state
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        reader.lookup_record_to_js(env, ip, &mut self.cache, &mut self.property_names)
+        reader.lookup_record_to_js(env, ip, &mut state.cache, &mut state.property_names)
     }
 
     #[napi(js_name = "getPath")]
     pub fn get_path<'env>(
-        &mut self,
+        &self,
         env: &'env Env,
         ip_address: JsString<'env>,
         path: Vec<Either<String, f64>>,
     ) -> Result<Unknown<'env>> {
-        let ip = self.parse_lookup_ip(env, ip_address)?;
+        let ip = parse_js_ip(env, ip_address)?;
         let owned_path = parse_path(path)?;
         let path_elements = path_elements_from_owned(&owned_path);
-        let reader = self
+        let mut state = self.lookup_state(ip)?;
+        let state = &mut *state;
+        let reader = state
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        reader.lookup_path_to_js(env, ip, &path_elements, &mut self.property_names)
+        reader.lookup_path_to_js(env, ip, &path_elements, &mut state.property_names)
     }
 
     #[napi(js_name = "getPaths")]
     pub fn get_paths<'env>(
-        &mut self,
+        &self,
         env: &'env Env,
         ip_address: JsString<'env>,
         paths: Vec<Vec<Either<String, f64>>>,
     ) -> Result<Unknown<'env>> {
-        let ip = self.parse_lookup_ip(env, ip_address)?;
+        let ip = parse_js_ip(env, ip_address)?;
         let owned_paths = parse_paths(paths)?;
         let path_elements = path_elements_from_paths(&owned_paths);
-        let reader = self
+        let mut state = self.lookup_state(ip)?;
+        let state = &mut *state;
+        let reader = state
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        reader.lookup_paths_to_js(env, ip, &path_elements, &mut self.property_names)
+        reader.lookup_paths_to_js(env, ip, &path_elements, &mut state.property_names)
     }
 
     #[napi(js_name = "compilePath")]
-    pub fn compile_path(&mut self, path: Vec<Either<String, f64>>) -> Result<u32> {
-        if self.reader.is_none() {
+    pub fn compile_path(&self, path: Vec<Either<String, f64>>) -> Result<u32> {
+        let mut state = self.state_mut()?;
+        if state.reader.is_none() {
             return Err(invalid_arg(ERR_CLOSED_DB));
         }
         let path = parse_path(path)?;
-        let path_id = self.next_path_id;
+        let path_id = state.next_path_id;
         let next_path_id = path_id
             .checked_add(1)
             .ok_or_else(|| napi_error("too many compiled paths"))?;
-        self.paths.insert(path_id, path);
-        self.next_path_id = next_path_id;
+        state.paths.insert(path_id, path);
+        state.next_path_id = next_path_id;
         Ok(path_id)
     }
 
     #[napi(js_name = "releasePath")]
-    pub fn release_path(&mut self, path_id: u32) -> Result<()> {
-        self.paths.remove(&path_id);
+    pub fn release_path(&self, path_id: u32) -> Result<()> {
+        self.state_mut()?.paths.remove(&path_id);
         Ok(())
     }
 
     #[napi(js_name = "getCompiledPath")]
     pub fn get_compiled_path<'env>(
-        &mut self,
+        &self,
         env: &'env Env,
         ip_address: JsString<'env>,
         path_id: u32,
     ) -> Result<Unknown<'env>> {
-        let ip = self.parse_lookup_ip(env, ip_address)?;
-        let reader = self
+        let ip = parse_js_ip(env, ip_address)?;
+        let mut state = self.lookup_state(ip)?;
+        let state = &mut *state;
+        let reader = state
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        let owned_path = compiled_path(&self.paths, path_id)?;
+        let owned_path = compiled_path(&state.paths, path_id)?;
         let path_elements = path_elements_from_owned(owned_path);
-        reader.lookup_path_to_js(env, ip, &path_elements, &mut self.property_names)
+        reader.lookup_path_to_js(env, ip, &path_elements, &mut state.property_names)
     }
 
     #[napi(js_name = "getWithPrefixLength")]
     pub fn get_with_prefix_length<'env>(
-        &mut self,
+        &self,
         env: &'env Env,
         ip_address: JsString<'env>,
     ) -> Result<Unknown<'env>> {
-        let ip = self.parse_lookup_ip(env, ip_address)?;
-        let reader = self
+        let ip = parse_js_ip(env, ip_address)?;
+        let mut state = self.lookup_state(ip)?;
+        let state = &mut *state;
+        let reader = state
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         let (js_value, prefix_len) = reader.lookup_record_with_prefix_to_js(
             env,
             ip,
-            &mut self.cache,
-            &mut self.property_names,
+            &mut state.cache,
+            &mut state.property_names,
         )?;
         let js_prefix = (prefix_len as u32).into_unknown(env)?;
         Array::from_vec(env, vec![js_value, js_prefix])?.into_unknown(env)
     }
 
     #[napi(js_name = "getMany")]
-    pub fn get_many<'env>(&mut self, env: &'env Env, ips: Array<'env>) -> Result<Unknown<'env>> {
+    pub fn get_many<'env>(&self, env: &'env Env, ips: Array<'env>) -> Result<Unknown<'env>> {
         let parsed_ips = self.parse_lookup_ips(env, &ips)?;
-        let reader = self
+        let mut state = self.lookup_state_for_ips(&parsed_ips)?;
+        let state = &mut *state;
+        let reader = state
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         collect_lookup_results(env, parsed_ips, |ip| {
-            reader.lookup_record_to_js(env, ip, &mut self.cache, &mut self.property_names)
+            reader.lookup_record_to_js(env, ip, &mut state.cache, &mut state.property_names)
         })
     }
 
     #[napi(js_name = "getManyCompiledPath")]
     pub fn get_many_compiled_path<'env>(
-        &mut self,
+        &self,
         env: &'env Env,
         ips: Array<'env>,
         path_id: u32,
     ) -> Result<Unknown<'env>> {
         let parsed_ips = self.parse_lookup_ips(env, &ips)?;
-        let reader = self
+        let mut state = self.lookup_state_for_ips(&parsed_ips)?;
+        let state = &mut *state;
+        let reader = state
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        let owned_path = compiled_path(&self.paths, path_id)?;
+        let owned_path = compiled_path(&state.paths, path_id)?;
         let path_elements = path_elements_from_owned(owned_path);
         collect_lookup_results(env, parsed_ips, |ip| {
-            reader.lookup_path_to_js(env, ip, &path_elements, &mut self.property_names)
+            reader.lookup_path_to_js(env, ip, &path_elements, &mut state.property_names)
         })
     }
 
     #[napi(js_name = "getManyPath")]
     pub fn get_many_path<'env>(
-        &mut self,
+        &self,
         env: &'env Env,
         ips: Array<'env>,
         path: Vec<Either<String, f64>>,
@@ -431,18 +450,20 @@ impl NativeReader {
         let parsed_ips = self.parse_lookup_ips(env, &ips)?;
         let owned_path = parse_path(path)?;
         let path_elements = path_elements_from_owned(&owned_path);
-        let reader = self
+        let mut state = self.lookup_state_for_ips(&parsed_ips)?;
+        let state = &mut *state;
+        let reader = state
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         collect_lookup_results(env, parsed_ips, |ip| {
-            reader.lookup_path_to_js(env, ip, &path_elements, &mut self.property_names)
+            reader.lookup_path_to_js(env, ip, &path_elements, &mut state.property_names)
         })
     }
 
     #[napi(js_name = "getManyPaths")]
     pub fn get_many_paths<'env>(
-        &mut self,
+        &self,
         env: &'env Env,
         ips: Array<'env>,
         paths: Vec<Vec<Either<String, f64>>>,
@@ -450,12 +471,14 @@ impl NativeReader {
         let parsed_ips = self.parse_lookup_ips(env, &ips)?;
         let owned_paths = parse_paths(paths)?;
         let path_elements = path_elements_from_paths(&owned_paths);
-        let reader = self
+        let mut state = self.lookup_state_for_ips(&parsed_ips)?;
+        let state = &mut *state;
+        let reader = state
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         collect_lookup_results(env, parsed_ips, |ip| {
-            reader.lookup_paths_to_js(env, ip, &path_elements, &mut self.property_names)
+            reader.lookup_paths_to_js(env, ip, &path_elements, &mut state.property_names)
         })
     }
 
@@ -475,8 +498,10 @@ impl NativeReader {
             include_networks_without_data,
             skip_empty_values,
         );
+        let state = self.state()?;
         let reader = Arc::clone(
-            self.reader
+            state
+                .reader
                 .as_ref()
                 .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?,
         );
@@ -485,14 +510,15 @@ impl NativeReader {
         Ok(NativeNetworkCursor {
             iter: Some(iter),
             property_names: PropertyNameCache::new(),
-            cache_records: self.cache.is_some(),
+            cache_records: state.cache.is_some(),
             path,
         })
     }
 
     #[napi]
     pub fn metadata<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
-        let reader = self
+        let state = self.state()?;
+        let reader = state
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
@@ -510,27 +536,49 @@ impl NativeReader {
         reader_from_bytes(bytes).map(ReaderSource::Memory)
     }
 
-    fn parse_lookup_ip(&self, env: &Env, ip_address: JsString<'_>) -> Result<IpAddr> {
-        let ip = parse_js_ip(env, ip_address)?;
-        if self.ip_version == 4 && matches!(ip, IpAddr::V6(_)) {
-            return Err(invalid_arg(format!(
-                "Error looking up {ip}. You attempted to look up an IPv6 address in an IPv4-only database"
-            )));
-        }
-        Ok(ip)
-    }
-
     fn parse_lookup_ips(&self, env: &Env, ips: &Array<'_>) -> Result<Vec<IpAddr>> {
         (0..ips.len())
             .map(|index| {
                 let ip = ips
                     .get::<JsString<'_>>(index)?
                     .ok_or_else(|| invalid_arg("missing IP address array element"))?;
-                self.parse_lookup_ip(env, ip)
+                parse_js_ip(env, ip)
             })
             .collect()
     }
 
+    fn lookup_state(&self, ip: IpAddr) -> Result<RefMut<'_, NativeReaderState>> {
+        let state = self.state_mut()?;
+        validate_lookup_ip(state.ip_version, ip)?;
+        Ok(state)
+    }
+
+    fn lookup_state_for_ips(&self, ips: &[IpAddr]) -> Result<RefMut<'_, NativeReaderState>> {
+        let state = self.state_mut()?;
+        for &ip in ips {
+            validate_lookup_ip(state.ip_version, ip)?;
+        }
+        Ok(state)
+    }
+
+    fn replace_reader(&self, env: &Env, new_reader: ReaderSource) -> Result<()> {
+        self.state_mut()?.replace_reader(env, new_reader)
+    }
+
+    fn state(&self) -> Result<Ref<'_, NativeReaderState>> {
+        self.state
+            .try_borrow()
+            .map_err(|_| napi_error(ERR_REENTRANT_DB))
+    }
+
+    fn state_mut(&self) -> Result<RefMut<'_, NativeReaderState>> {
+        self.state
+            .try_borrow_mut()
+            .map_err(|_| napi_error(ERR_REENTRANT_DB))
+    }
+}
+
+impl NativeReaderState {
     fn replace_reader(&mut self, env: &Env, new_reader: ReaderSource) -> Result<()> {
         self.clear_record_cache(env)?;
         self.ip_version = new_reader.metadata().ip_version;
@@ -545,11 +593,18 @@ impl NativeReader {
         Ok(())
     }
 
-    fn clear_property_names(&mut self, env: &Env) -> Result<()> {
-        let _ = env;
+    fn clear_property_names(&mut self) {
         self.property_names.clear();
-        Ok(())
     }
+}
+
+fn validate_lookup_ip(ip_version: u16, ip: IpAddr) -> Result<()> {
+    if ip_version == 4 && matches!(ip, IpAddr::V6(_)) {
+        return Err(invalid_arg(format!(
+            "Error looking up {ip}. You attempted to look up an IPv6 address in an IPv4-only database"
+        )));
+    }
+    Ok(())
 }
 
 fn collect_lookup_results<'env>(
@@ -578,8 +633,10 @@ fn path_elements_from_paths(paths: &[Vec<OwnedPathElement>]) -> Vec<PathElements
 
 impl ObjectFinalize for NativeReader {
     fn finalize(mut self, env: Env) -> Result<()> {
-        self.clear_record_cache(&env)?;
-        self.clear_property_names(&env)
+        let state = self.state.get_mut();
+        state.clear_record_cache(&env)?;
+        state.clear_property_names();
+        Ok(())
     }
 }
 
@@ -615,13 +672,16 @@ fn create_reader(source: ReaderSource, cache_capacity: Option<u32>) -> NativeRea
     let cache = cache_capacity
         .and_then(|capacity| NonZeroUsize::new(capacity as usize))
         .map(RecordCache::new);
-    NativeReader {
+    let state = NativeReaderState {
         reader: Some(Arc::new(source)),
         cache,
         property_names: PropertyNameCache::new(),
         paths: HashMap::new(),
         next_path_id: 0,
         ip_version,
+    };
+    NativeReader {
+        state: RefCell::new(state),
     }
 }
 
