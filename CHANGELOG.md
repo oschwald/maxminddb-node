@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stopped exposing undocumented native reader constructors and helpers from the
   JavaScript entry point, leaving `nativeVersion()` as the supported diagnostic.
 
+### Fixed
+
+- Preserved complete invalid IP values in errors when an overlong string crosses
+  the native UTF-8 buffer boundary at a multibyte character.
+
 ### Performance
 
 - Moved asynchronous reload work, including memory-mapped reloads triggered by

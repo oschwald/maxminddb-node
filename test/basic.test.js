@@ -360,6 +360,14 @@ test('rejects invalid lookup inputs', async () => {
     () => reader.get('x'.repeat(100)),
     new RegExp(`Invalid IP address: ${'x'.repeat(100)}`)
   );
+  const truncatedMultibyteIp = `${'x'.repeat(62)}😀TAIL`;
+  assert.throws(
+    () => reader.get(truncatedMultibyteIp),
+    (error) => {
+      assert.equal(error.message, `Invalid IP address: ${truncatedMultibyteIp}`);
+      return true;
+    }
+  );
   assert.throws(() => reader.getMany(['81.2.69.142', 42]), /string/i);
   assert.throws(() => reader.getMany(new Array(1)), /string/i);
   assert.throws(

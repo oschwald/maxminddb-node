@@ -5,6 +5,8 @@ use std::{
     str::FromStr,
 };
 
+const MAX_IP_ADDRESS_LENGTH: usize = 45;
+
 pub(crate) fn parse_ip(ip: &str) -> Result<IpAddr> {
     if let Some(ip) = parse_ipv4(ip.as_bytes()) {
         return Ok(IpAddr::V4(ip));
@@ -32,7 +34,7 @@ pub(crate) fn parse_js_ip(env: &Env, ip: JsString<'_>) -> Result<IpAddr> {
         return Err(invalid_arg("IP address must be a string"));
     }
 
-    if written < bytes.len() - 1 {
+    if written <= MAX_IP_ADDRESS_LENGTH {
         // Node's UTF-8 conversion always produces valid UTF-8, replacing
         // unpaired UTF-16 surrogates when necessary.
         return parse_ip(unsafe { std::str::from_utf8_unchecked(&bytes[..written]) });
