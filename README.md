@@ -61,9 +61,9 @@ cache sizes can therefore retain significant heap memory when the database
 records are large or lookups touch many distinct data offsets. Cached records
 are returned by reference, so mutating a cached record can affect later lookups
 for the same data offset until that entry is evicted, `reader.clearCache()` is
-called, or the reader is closed. `getPath()`, `getManyPath()`, and compiled
-`reader.path()` lookups decode only the requested path and do not populate the
-full-record cache.
+called, or the reader is closed. `getPath()`, `getPaths()`, `getManyPath()`,
+`getManyPaths()`, and compiled `reader.path()` lookups decode only the requested
+paths and do not populate the full-record cache.
 
 When `watchForUpdates` is enabled, file-change reloads run serially. A failed
 watched reload leaves the existing reader active, stores the failure on
@@ -71,12 +71,24 @@ watched reload leaves the existing reader active, stores the failure on
 reload clears `lastReloadError` and calls the hook. Close watched readers with
 `reader.close()` to remove the file watcher.
 
+Call `await reader.reloadAsync()` to open and validate a replacement database
+on a worker thread before atomically swapping it into the reader. The existing
+`reader.reload()` remains available when synchronous replacement is preferred.
+
 ## Extensions
 
 ```js
 reader.getPath('8.8.8.8', ['country', 'iso_code']);
 reader.getMany(['8.8.8.8', '1.1.1.1']);
 reader.getManyPath(['8.8.8.8', '1.1.1.1'], ['country', 'iso_code']);
+reader.getPaths('8.8.8.8', [
+  ['country', 'iso_code'],
+  ['continent', 'code'],
+]);
+reader.getManyPaths(['8.8.8.8', '1.1.1.1'], [
+  ['country', 'iso_code'],
+  ['continent', 'code'],
+]);
 
 const countryCode = reader.path(['country', 'iso_code']);
 countryCode.get('8.8.8.8');
@@ -91,20 +103,32 @@ for (const page of reader.withinPages('81.2.69.0/24', { pageSize: 100 })) {
     console.log(network, record);
   }
 }
+
+for (const [network, country] of reader.withinPath(
+  '81.2.69.0/24',
+  ['country', 'iso_code']
+)) {
+  console.log(network, country);
+}
 ```
 
-Path elements are strings for map keys and numbers for array indexes. Negative
-indexes count from the end of an array.
+Path elements are strings for map keys and finite, safe-integer numbers for
+array indexes. Negative indexes count from the end of an array.
 
 Create compiled path lookups once and reuse them in hot paths. `reader.path()`
 parses and stores the path, and the returned `PathLookup` avoids reparsing the
 path array on each lookup.
 
-For high-volume lookup workloads, prefer `getMany()` or `getManyPath()` when
-you can batch IPs. They cross the native boundary once for the whole batch and
-are significantly faster than calling `get()` in a JavaScript loop.
+For high-volume lookup workloads, prefer `getMany()`, `getManyPath()`, or
+`getManyPaths()` when you can batch IPs. They cross the native boundary once
+for the whole batch and are significantly faster than calling `get()` in a
+JavaScript loop. `getPaths()` and `getManyPaths()` perform one database lookup
+per IP and return projected values in the same order as the requested paths;
+missing paths are returned as `null`.
 
 `networks()` and `within()` return lazy iterators backed by native cursors.
+Use `networksPath()` or `withinPath()` to decode only a selected field while
+walking networks.
 For large network walks, use `networkPages()`, `withinPages()`, or
 `NetworkIterator#nextPage()` to cross the native boundary once per page rather
 than once per network.
@@ -118,8 +142,8 @@ Path-based `open()` defaults to memory-mapped reads:
 - `MODE_MEMORY`
 - `MODE_BUFFER`
 
-Use `MODE_BUFFER` if you want `open()` to read the file into a Node `Buffer`
-before constructing the reader.
+`MODE_MEMORY` and `MODE_BUFFER` asynchronously read the file once into
+Rust-owned memory. `MODE_BUFFER` is retained as a compatibility alias.
 
 ```js
 import maxmind from '@oschwald/maxminddb';
@@ -133,11 +157,9 @@ Mode tradeoffs:
 
 - `MODE_MMAP`/`MODE_AUTO` opens quickly and keeps RSS low by mapping the
   database file. Replace database files atomically when using watched reloads.
-- `MODE_MEMORY` reads the database into Rust-owned memory. It costs more memory
-  at open time but is independent of the source file after open.
-- `MODE_BUFFER` reads the database into a Node `Buffer` before constructing the
-  native reader. Use it when you need Node-side file loading behavior or when
-  tests need to mutate a watched temporary file safely.
+- `MODE_MEMORY`/`MODE_BUFFER` asynchronously read the database into Rust-owned
+  memory. They cost more memory at open time but are independent of the source
+  file after open.
 
 ## Performance Notes
 

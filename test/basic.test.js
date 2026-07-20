@@ -2,7 +2,6 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -16,6 +15,10 @@ const dataDir = path.join(
 
 test('loads native binding', () => {
   assert.equal(maxmind.nativeVersion(), '0.2.1');
+  assert.equal(maxmind.NativeReader, undefined);
+  assert.equal(maxmind.NativeNetworkCursor, undefined);
+  assert.equal(maxmind.openReader, undefined);
+  assert.equal(maxmind.openReaderAsync, undefined);
 });
 
 test('validates IP addresses', () => {
@@ -145,6 +148,13 @@ test('reuses compiled paths', async () => {
     country.getMany(['1.1.1.1', '175.16.199.1', '81.2.69.142']),
     [null, 'CN', 'GB']
   );
+  const pathId = country._pathId;
+  country.close();
+  assert.throws(() => country.get('175.16.199.1'), /Path lookup is closed/);
+  assert.throws(
+    () => reader._reader.getCompiledPath('175.16.199.1', pathId),
+    /Invalid compiled path id/
+  );
 });
 
 test('looks up batches', async () => {
@@ -162,6 +172,84 @@ test('looks up batches', async () => {
   ]);
 });
 
+test('looks up multi-field projections', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const ips = ['1.1.1.1', '175.16.199.1', '81.2.69.142'];
+  const paths = [
+    ['country', 'iso_code'],
+    ['registered_country', 'iso_code'],
+    ['continent', 'code'],
+    ['city', 'names', 'en'],
+    ['location', 'time_zone'],
+    ['missing'],
+  ];
+
+  assert.deepEqual(reader.getPaths('81.2.69.142', paths), [
+    'GB',
+    'US',
+    'EU',
+    'London',
+    'Europe/London',
+    null,
+  ]);
+  assert.deepEqual(reader.getManyPaths(ips, paths), [
+    [null, null, null, null, null, null],
+    ['CN', 'CN', 'AS', 'Changchun', 'Asia/Harbin', null],
+    ['GB', 'US', 'EU', 'London', 'Europe/London', null],
+  ]);
+  assert.deepEqual(reader.getPaths('81.2.69.142', []), []);
+  assert.deepEqual(reader.getManyPaths([], paths), []);
+});
+
+test('allows reentrant reader access while extracting batch inputs', async () => {
+  const database = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  const operations = [
+    (reader, ips) => reader.getMany(ips),
+    (reader, ips) => reader.getManyPath(ips, ['country', 'iso_code']),
+    (reader, ips) =>
+      reader.getManyPaths(ips, [
+        ['country', 'iso_code'],
+        ['continent', 'code'],
+      ]),
+    (reader, ips) => {
+      const lookup = reader.path(['country', 'iso_code']);
+      try {
+        return lookup.getMany(ips);
+      } finally {
+        lookup.close();
+      }
+    },
+  ];
+
+  for (const operation of operations) {
+    const reader = await maxmind.open(database);
+    let nestedCountry;
+    const ips = [];
+    Object.defineProperty(ips, 0, {
+      get() {
+        nestedCountry = reader.get('175.16.199.1').country.iso_code;
+        return '81.2.69.142';
+      },
+    });
+    ips.length = 1;
+
+    assert.equal(operation(reader, ips).length, 1);
+    assert.equal(nestedCountry, 'CN');
+    reader.close();
+  }
+
+  const reader = await maxmind.open(database);
+  const ips = [];
+  Object.defineProperty(ips, 0, {
+    get() {
+      reader.close();
+      return '81.2.69.142';
+    },
+  });
+  ips.length = 1;
+  assert.throws(() => reader.getMany(ips), /closed MaxMind DB/);
+});
+
 test('iterates networks within a CIDR', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
   const records = [...reader.within('81.2.69.142/31')];
@@ -171,6 +259,52 @@ test('iterates networks within a CIDR', async () => {
     '81.2.69.142/31',
     reader.get('81.2.69.142'),
   ]);
+});
+
+test('closes network cursors when iteration stops early', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const iterator = reader.networks();
+
+  for (const _record of iterator) {
+    break;
+  }
+
+  assert.equal(iterator._done, true);
+  assert.deepEqual(iterator.next(), { done: true, value: undefined });
+  reader.close();
+});
+
+test('selectively decodes paths while iterating networks', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const iterator = reader.withinPath(
+    '81.2.69.142/31',
+    ['country', 'iso_code'],
+    { pageSize: 1 }
+  );
+
+  assert.deepEqual(iterator.path, ['country', 'iso_code']);
+  assert(Object.isFrozen(iterator.path));
+  assert.deepEqual([...iterator], [['81.2.69.142/31', 'GB']]);
+  reader.close();
+});
+
+test('reuses shared network records only when caching is enabled', async () => {
+  const database = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  const cached = await maxmind.open(database);
+  const cachedRecords = new Map(cached.networks());
+  assert.strictEqual(
+    cachedRecords.get('81.2.69.160/27'),
+    cachedRecords.get('81.2.69.192/28')
+  );
+  cached.close();
+
+  const uncached = await maxmind.open(database, { cache: false });
+  const uncachedRecords = new Map(uncached.networks());
+  assert.notStrictEqual(
+    uncachedRecords.get('81.2.69.160/27'),
+    uncachedRecords.get('81.2.69.192/28')
+  );
+  uncached.close();
 });
 
 test('paginates networks within a CIDR', async () => {
@@ -185,6 +319,11 @@ test('paginates networks within a CIDR', async () => {
 
   const secondPage = iterator.nextPage();
   assert.deepEqual(secondPage, records.slice(1, 2));
+
+  const mixedIterator = reader.within('81.2.69.0/24', { pageSize: 2 });
+  assert.deepEqual(mixedIterator.next().value, records[0]);
+  assert.deepEqual(mixedIterator.nextPage(2), records.slice(1, 3));
+  assert.deepEqual([...mixedIterator], records.slice(3));
 
   assert.deepEqual(
     reader.within('81.2.69.0/24').nextPage(0xffffffff),
@@ -244,6 +383,14 @@ test('closes reader', async () => {
     () => reader.getManyPath(['81.2.69.142'], ['country']),
     /closed MaxMind DB/
   );
+  assert.throws(
+    () => reader.getPaths('81.2.69.142', [['country']]),
+    /closed MaxMind DB/
+  );
+  assert.throws(
+    () => reader.getManyPaths(['81.2.69.142'], [['country']]),
+    /closed MaxMind DB/
+  );
   assert.throws(() => reader.networks(), /closed MaxMind DB/);
   assert.throws(
     () => reader.within('81.2.69.0/24'),
@@ -259,9 +406,48 @@ test('rejects invalid lookup inputs', async () => {
   assert.throws(() => reader.get('not an ip'), /Invalid IP address/);
   assert.throws(() => reader.getMany(['81.2.69.142', 'not an ip']), /Invalid IP address/);
   assert.throws(
-    () => reader.getPath('81.2.69.142', [null]),
-    /String.*i64/
+    () => reader.get('x'.repeat(100)),
+    new RegExp(`Invalid IP address: ${'x'.repeat(100)}`)
   );
+  const truncatedMultibyteIp = `${'x'.repeat(62)}😀TAIL`;
+  assert.throws(
+    () => reader.get(truncatedMultibyteIp),
+    (error) => {
+      assert.equal(error.message, `Invalid IP address: ${truncatedMultibyteIp}`);
+      return true;
+    }
+  );
+  assert.throws(() => reader.getMany(['81.2.69.142', 42]), /string/i);
+  assert.throws(() => reader.getMany(new Array(1)), /string/i);
+  assert.throws(
+    () => reader.getPath('81.2.69.142', [null]),
+    /String.*f64/
+  );
+  assert.equal(
+    reader.getPath('81.2.69.142', ['subdivisions', Number.MAX_SAFE_INTEGER]),
+    null
+  );
+  assert.equal(
+    reader.getPath('81.2.69.142', ['subdivisions', Number.MIN_SAFE_INTEGER]),
+    null
+  );
+  for (const index of [
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+    Number.MIN_SAFE_INTEGER - 1,
+  ]) {
+    assert.throws(
+      () => reader.getPath('81.2.69.142', ['subdivisions', index]),
+      /path indexes must be finite safe integers/
+    );
+    assert.throws(
+      () => reader.path(['subdivisions', index]),
+      /path indexes must be finite safe integers/
+    );
+  }
   assert.throws(
     () => reader._reader.getCompiledPath('81.2.69.142', 999),
     /Invalid compiled path id: 999/
@@ -283,50 +469,81 @@ test('rejects gzip files in open', async () => {
   const gzipPath = path.join(dir, 'db.mmdb.gz');
   fs.writeFileSync(gzipPath, Buffer.from([0x1f, 0x8b, 0x08, 0x00]));
 
-  await assert.rejects(
-    () => maxmind.open(gzipPath),
+  for (const mode of [
+    maxmind.MODE_MMAP,
+    maxmind.MODE_MEMORY,
+    maxmind.MODE_BUFFER,
+  ]) {
+    await assert.rejects(
+      () => maxmind.open(gzipPath, { mode }),
+      /passing in a file in gzip format/
+    );
+  }
+  assert.throws(
+    () => new maxmind.Reader(fs.readFileSync(gzipPath)),
     /passing in a file in gzip format/
   );
 });
 
-test('rejects truncated large-file stream reads', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
-  const dbPath = path.join(dir, 'db.mmdb');
-  fs.writeFileSync(dbPath, Buffer.from([0, 1, 2, 3]));
-
-  const script = `
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const { Readable } = require('node:stream');
-const originalCreateReadStream = fs.createReadStream;
-fs.createReadStream = (filepath, options) => {
-  if (filepath === ${JSON.stringify(dbPath)}) {
-    return Readable.from([Buffer.from([0, 1])]);
+test('opens owned-memory modes without Node-side file reads', async () => {
+  const originalReadFile = fs.promises.readFile;
+  fs.promises.readFile = async () => {
+    throw new Error('unexpected Node-side file read');
+  };
+  try {
+    for (const mode of [maxmind.MODE_MEMORY, maxmind.MODE_BUFFER]) {
+      const reader = await maxmind.open(
+        path.join(dataDir, 'GeoIP2-City-Test.mmdb'),
+        { mode }
+      );
+      assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
+      reader.close();
+    }
+  } finally {
+    fs.promises.readFile = originalReadFile;
   }
-  return originalCreateReadStream(filepath, options);
-};
-const maxmind = require('.');
-(async () => {
-  await assert.rejects(
-    () => maxmind.open(${JSON.stringify(dbPath)}, { mode: maxmind.MODE_BUFFER }),
-    /File changed while reading/
-  );
-})().catch((error) => {
-  console.error(error);
-  process.exit(1);
 });
-`;
 
-  const result = childProcess.spawnSync(process.execPath, ['-e', script], {
-    cwd: path.join(__dirname, '..'),
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      MAXMINDDB_LARGE_FILE_THRESHOLD_BYTES: '1',
-    },
-  });
+test('reloads file-backed readers asynchronously', async () => {
+  const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  for (const mode of [
+    maxmind.MODE_MMAP,
+    maxmind.MODE_MEMORY,
+    maxmind.MODE_BUFFER,
+  ]) {
+    const reader = await maxmind.open(sourcePath, { mode });
+    const previous = reader._reader;
+    await reader.reloadAsync();
 
-  assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.notStrictEqual(reader._reader, previous);
+    assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
+    assert.equal(reader.lastReloadError, null);
+    reader.close();
+  }
+
+  const bufferReader = new maxmind.Reader(fs.readFileSync(sourcePath));
+  await assert.rejects(
+    () => bufferReader.reloadAsync(),
+    /Cannot reload a buffer-backed Reader/
+  );
+  bufferReader.close();
+});
+
+test('keeps the existing reader after an asynchronous reload failure', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
+  const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  const dbPath = path.join(dir, 'GeoIP2-City-Test.mmdb');
+  fs.copyFileSync(sourcePath, dbPath);
+
+  const reader = await maxmind.open(dbPath, { mode: maxmind.MODE_MEMORY });
+  const previous = reader._reader;
+  fs.writeFileSync(dbPath, Buffer.from('not an mmdb'));
+
+  await assert.rejects(() => reader.reloadAsync(), /bad data/i);
+  assert.strictEqual(reader._reader, previous);
+  assert(reader.lastReloadError instanceof Error);
+  assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
+  reader.close();
 });
 
 test('unwatches database files on close', async () => {
@@ -385,6 +602,7 @@ test('records and clears watched reload failures', async () => {
         hookCalls += 1;
       },
     });
+    const country = reader.path(['country', 'iso_code']);
 
     fs.writeFileSync(dbPath, Buffer.from('not an mmdb'));
     watched[0].listener();
@@ -401,6 +619,8 @@ test('records and clears watched reload failures', async () => {
 
     assert.equal(reader.lastReloadError, null);
     assert.equal(hookCalls, 1);
+    assert.equal(country.get('175.16.199.1'), 'CN');
+    country.close();
     reader.close();
   } finally {
     fs.watchFile = originalWatchFile;
@@ -411,25 +631,24 @@ test('records and clears watched reload failures', async () => {
 test('coalesces and serializes watched buffer reloads', async () => {
   const originalWatchFile = fs.watchFile;
   const originalUnwatchFile = fs.unwatchFile;
-  const originalReadFile = fs.promises.readFile;
   const watched = [];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
   const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
   const dbPath = path.join(dir, 'GeoIP2-City-Test.mmdb');
-  let activeReads = 0;
-  let maxActiveReads = 0;
+  let activeReloads = 0;
+  let maxActiveReloads = 0;
   let hookCalls = 0;
   fs.copyFileSync(sourcePath, dbPath);
 
-  const waitForActiveRead = async () => {
+  const waitForActiveReload = async () => {
     const deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
-      if (activeReads > 0) {
+      if (activeReloads > 0) {
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    throw new Error('timed out waiting for active watched reload read');
+    throw new Error('timed out waiting for active watched reload');
   };
 
   fs.watchFile = (filepath, options, listener) => {
@@ -446,27 +665,25 @@ test('coalesces and serializes watched buffer reloads', async () => {
       },
     });
 
-    fs.promises.readFile = async (...args) => {
-      if (args[0] !== dbPath) {
-        return originalReadFile.apply(fs.promises, args);
-      }
-      activeReads += 1;
-      maxActiveReads = Math.max(maxActiveReads, activeReads);
+    const reloadWatchedFile = reader._reloadWatchedFile.bind(reader);
+    reader._reloadWatchedFile = async (...args) => {
+      activeReloads += 1;
+      maxActiveReloads = Math.max(maxActiveReloads, activeReloads);
       await new Promise((resolve) => setTimeout(resolve, 10));
       try {
-        return await originalReadFile.apply(fs.promises, args);
+        return await reloadWatchedFile(...args);
       } finally {
-        activeReads -= 1;
+        activeReloads -= 1;
       }
     };
 
     watched[0].listener();
-    await waitForActiveRead();
+    await waitForActiveReload();
     watched[0].listener();
     watched[0].listener();
     await reader._watchReloadPromise;
 
-    assert.equal(maxActiveReads, 1);
+    assert.equal(maxActiveReloads, 1);
     assert.equal(hookCalls, 2);
 
     watched[0].listener();
@@ -478,6 +695,5 @@ test('coalesces and serializes watched buffer reloads', async () => {
   } finally {
     fs.watchFile = originalWatchFile;
     fs.unwatchFile = originalUnwatchFile;
-    fs.promises.readFile = originalReadFile;
   }
 });

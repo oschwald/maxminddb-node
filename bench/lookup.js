@@ -15,6 +15,13 @@ const DEFAULT_COUNT = 200_000;
 const DEFAULT_WARMUP = 50_000;
 const DEFAULT_NETWORK_CIDR = '81.2.69.0/24';
 const DEFAULT_NETWORK_PAGE_SIZE = 1000;
+const PROJECTION_PATHS = [
+  ['country', 'iso_code'],
+  ['registered_country', 'iso_code'],
+  ['continent', 'code'],
+  ['city', 'names', 'en'],
+  ['location', 'time_zone'],
+];
 
 function parseArgs(argv) {
   const options = {
@@ -207,16 +214,33 @@ function benchLookup(label, reader, ips, warmupCount, lookup, dbResult, options)
   return result;
 }
 
-function benchMany(label, reader, ips, warmupCount, lookupMany, dbResult, options) {
+function benchMany(
+  label,
+  reader,
+  ips,
+  warmupCount,
+  lookupMany,
+  dbResult,
+  options,
+  isFound
+) {
   warmup(reader, ips, warmupCount, (r, ip) => r.get(ip));
   gc();
 
   const start = process.hrtime.bigint();
   const values = lookupMany(reader, ips);
   let found = 0;
-  for (const value of values) {
-    if (value) {
-      found += 1;
+  if (isFound) {
+    for (const value of values) {
+      if (isFound(value)) {
+        found += 1;
+      }
+    }
+  } else {
+    for (const value of values) {
+      if (value) {
+        found += 1;
+      }
     }
   }
   const elapsed = Number(process.hrtime.bigint() - start) / 1e9;
@@ -357,6 +381,27 @@ async function benchDatabase(db, options, ips, nodeMaxmind) {
     (reader, values) => reader.getManyPath(values, ['country', 'iso_code']),
     dbResult,
     options
+  );
+  benchMany(
+    'getManyPaths 3 fields',
+    cached,
+    ips,
+    options.warmup,
+    (reader, values) =>
+      reader.getManyPaths(values, PROJECTION_PATHS.slice(0, 3)),
+    dbResult,
+    options,
+    (row) => row.some((value) => value !== null)
+  );
+  benchMany(
+    'getManyPaths 5 fields',
+    cached,
+    ips,
+    options.warmup,
+    (reader, values) => reader.getManyPaths(values, PROJECTION_PATHS),
+    dbResult,
+    options,
+    (row) => row.some((value) => value !== null)
   );
   benchMany(
     'path.getMany country.iso',

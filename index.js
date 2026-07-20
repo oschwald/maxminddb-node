@@ -54,12 +54,14 @@ function loadNativeBinding() {
 }
 
 const native = loadNativeBinding();
+const pathFinalizer = new FinalizationRegistry(({ nativeReader, pathId }) => {
+  try {
+    nativeReader.releasePath(pathId);
+  } catch {
+    // Reader shutdown may have already released all compiled paths.
+  }
+});
 
-const DEFAULT_LARGE_FILE_THRESHOLD = 512 * 1024 * 1024;
-const LARGE_FILE_THRESHOLD = normalizeLargeFileThreshold(
-  process.env.MAXMINDDB_LARGE_FILE_THRESHOLD_BYTES
-);
-const STREAM_WATERMARK = 8 * 1024 * 1024;
 const DEFAULT_CACHE_MAX = 10_000;
 const MAX_CACHE_MAX = 0xffffffff;
 const legacyErrorMessage = `Maxmind v2 module has changed API.
@@ -73,36 +75,6 @@ const MODE_AUTO = 'auto';
 const MODE_MMAP = 'mmap';
 const MODE_MEMORY = 'memory';
 const MODE_BUFFER = 'buffer';
-
-function normalizeLargeFileThreshold(value) {
-  if (value == null || value === '') {
-    return DEFAULT_LARGE_FILE_THRESHOLD;
-  }
-
-  const threshold = Number(value);
-  return Number.isSafeInteger(threshold) && threshold >= 0
-    ? threshold
-    : DEFAULT_LARGE_FILE_THRESHOLD;
-}
-
-function isGzipBuffer(buffer) {
-  return buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b;
-}
-
-async function assertNotGzipFile(filepath) {
-  const handle = await fs.promises.open(filepath, 'r');
-  try {
-    const buffer = Buffer.alloc(2);
-    const { bytesRead } = await handle.read(buffer, 0, 2, 0);
-    if (bytesRead === 2 && isGzipBuffer(buffer)) {
-      throw new Error(
-        'Looks like you are passing in a file in gzip format, please use mmdb database instead.'
-      );
-    }
-  } finally {
-    await handle.close();
-  }
-}
 
 function normalizeMode(mode) {
   if (mode == null || mode === MODE_AUTO) {
@@ -178,91 +150,72 @@ function waitForFile(filepath) {
   });
 }
 
-async function readLargeFile(filepath, size) {
-  return new Promise((resolve, reject) => {
-    const buffer = Buffer.allocUnsafe(size);
-    let offset = 0;
-    let settled = false;
-    const stream = fs.createReadStream(filepath, {
-      highWaterMark: STREAM_WATERMARK,
-    });
-
-    const finish = (error, value) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (error) {
-        stream.destroy();
-        reject(error);
-      } else {
-        resolve(value);
-      }
-    };
-
-    stream.on('data', (chunk) => {
-      const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      if (offset + bufferChunk.length > size) {
-        finish(
-          new Error(
-            `File changed while reading ${filepath}: expected ${size} bytes but read more`
-          )
-        );
-        return;
-      }
-      bufferChunk.copy(buffer, offset);
-      offset += bufferChunk.length;
-    });
-    stream.on('end', () => {
-      if (offset !== size) {
-        finish(
-          new Error(
-            `File changed while reading ${filepath}: expected ${size} bytes but read ${offset}`
-          )
-        );
-        return;
-      }
-      finish(null, buffer);
-    });
-    stream.on('error', (error) => finish(error));
-  });
-}
-
-async function readFile(filepath) {
-  const stat = await fs.promises.stat(filepath);
-  return stat.size < LARGE_FILE_THRESHOLD
-    ? fs.promises.readFile(filepath)
-    : readLargeFile(filepath, stat.size);
-}
-
 class PathLookup {
   constructor(reader, path) {
     this._reader = reader;
-    this._pathId = reader._reader.compilePath(path);
     this.path = Object.freeze([...path]);
+    this._closed = false;
+    this._compileFor(reader._reader);
   }
 
   get(ipAddress) {
-    return this._reader._reader.getCompiledPath(ipAddress, this._pathId);
+    this._ensureCompiled();
+    return this._nativeReader.getCompiledPath(ipAddress, this._pathId);
   }
 
   getMany(ipAddresses) {
-    return this._reader._reader.getManyCompiledPath(ipAddresses, this._pathId);
+    this._ensureCompiled();
+    return this._nativeReader.getManyCompiledPath(ipAddresses, this._pathId);
+  }
+
+  close() {
+    if (!this._closed) {
+      pathFinalizer.unregister(this);
+      this._nativeReader.releasePath(this._pathId);
+      this._closed = true;
+    }
+  }
+
+  _ensureCompiled() {
+    if (this._closed) {
+      throw new Error('Path lookup is closed.');
+    }
+    if (this._nativeReader !== this._reader._reader) {
+      pathFinalizer.unregister(this);
+      this._nativeReader.releasePath(this._pathId);
+      this._compileFor(this._reader._reader);
+    }
+  }
+
+  _compileFor(nativeReader) {
+    this._nativeReader = nativeReader;
+    this._pathId = nativeReader.compilePath(this.path);
+    pathFinalizer.register(
+      this,
+      { nativeReader: this._nativeReader, pathId: this._pathId },
+      this
+    );
   }
 }
 
 class NetworkIterator {
-  constructor(reader, cidr, options = {}) {
+  constructor(reader, cidr, options = {}, path = null) {
     const [networkOptions, pageSize] = normalizeNetworkIteratorOptions(options);
-    this._cursor = reader._reader.networkCursor(cidr, ...networkOptions);
+    this._cursor = reader._reader.networkCursor(cidr, ...networkOptions, path);
     this._pageSize = pageSize;
     this._page = [];
     this._index = 0;
     this._done = false;
+    this.path = path == null ? null : Object.freeze([...path]);
   }
 
   [Symbol.iterator]() {
     return this;
+  }
+
+  return() {
+    this.close();
+    return { done: true, value: undefined };
   }
 
   next() {
@@ -290,6 +243,16 @@ class NetworkIterator {
       return [];
     }
 
+    if (this._index >= this._page.length) {
+      this._page = [];
+      this._index = 0;
+      const page = this._cursor.nextPage(pageSize);
+      if (page.length === 0) {
+        this.close();
+      }
+      return page;
+    }
+
     const page = [];
     while (page.length < pageSize && this._index < this._page.length) {
       page.push(this._page[this._index]);
@@ -298,7 +261,9 @@ class NetworkIterator {
 
     if (page.length < pageSize) {
       const nativePage = this._cursor.nextPage(pageSize - page.length);
-      page.push(...nativePage);
+      for (const record of nativePage) {
+        page.push(record);
+      }
       if (nativePage.length === 0) {
         this.close();
       }
@@ -349,6 +314,28 @@ class Reader {
 
   static open(filepath, options = {}) {
     const mode = normalizeMode(options.mode);
+    return Reader._fromNative(
+      filepath,
+      mode,
+      options,
+      native.openReader(filepath, mode, normalizeCacheCapacity(options))
+    );
+  }
+
+  static async openOwned(filepath, mode, options = {}) {
+    return Reader._fromNative(
+      filepath,
+      mode,
+      options,
+      await native.openReaderAsync(
+        filepath,
+        mode,
+        normalizeCacheCapacity(options)
+      )
+    );
+  }
+
+  static _fromNative(filepath, mode, options, nativeReader) {
     const reader = Object.create(Reader.prototype);
     reader._mode = mode;
     reader._filepath = filepath;
@@ -359,7 +346,7 @@ class Reader {
     reader._watchReloadPromise = Promise.resolve();
     reader._lastReloadError = null;
     reader._cacheCapacity = normalizeCacheCapacity(options);
-    reader._reader = native.openReader(filepath, mode, reader._cacheCapacity);
+    reader._reader = nativeReader;
     reader.metadata = normalizeMetadata(reader._reader.metadata());
     reader.options = options;
     return reader;
@@ -396,6 +383,36 @@ class Reader {
       this._lastReloadError = error;
       throw error;
     }
+  }
+
+  async reloadAsync() {
+    if (!this._filepath) {
+      throw new Error('Cannot reload a buffer-backed Reader');
+    }
+    try {
+      const replacement = await native.openReaderAsync(
+        this._filepath,
+        this._mode,
+        this._cacheCapacity
+      );
+      if (this.closed) {
+        replacement.close();
+        throw new Error('Cannot reload a closed Reader');
+      }
+      this._replaceNativeReader(replacement);
+    } catch (error) {
+      this._lastReloadError = error;
+      throw error;
+    }
+  }
+
+  _replaceNativeReader(replacement) {
+    const metadata = normalizeMetadata(replacement.metadata());
+    const previous = this._reader;
+    this._reader = replacement;
+    this.metadata = metadata;
+    this._lastReloadError = null;
+    previous.close();
   }
 
   close() {
@@ -444,15 +461,16 @@ class Reader {
     }
 
     try {
-      if (mode === MODE_BUFFER) {
-        const database = await readFile(filepath);
-        if (this.closed || this._watchFilepath !== filepath) {
-          return;
-        }
-        this.load(database);
-      } else {
-        this.reload();
+      const replacement = await native.openReaderAsync(
+        filepath,
+        mode,
+        this._cacheCapacity
+      );
+      if (this.closed || this._watchFilepath !== filepath) {
+        replacement.close();
+        return;
       }
+      this._replaceNativeReader(replacement);
       if (!this.closed && this._watchFilepath === filepath && hook) {
         hook();
       }
@@ -477,6 +495,10 @@ class Reader {
     return this._reader.getPath(ipAddress, path);
   }
 
+  getPaths(ipAddress, paths) {
+    return this._reader.getPaths(ipAddress, paths);
+  }
+
   path(path) {
     return new PathLookup(this, path);
   }
@@ -493,12 +515,24 @@ class Reader {
     return this._reader.getManyPath(ipAddresses, path);
   }
 
+  getManyPaths(ipAddresses, paths) {
+    return this._reader.getManyPaths(ipAddresses, paths);
+  }
+
   networks(options = {}) {
     return new NetworkIterator(this, null, options);
   }
 
   within(cidr, options = {}) {
     return new NetworkIterator(this, cidr, options);
+  }
+
+  networksPath(path, options = {}) {
+    return new NetworkIterator(this, null, options, path);
+  }
+
+  withinPath(cidr, path, options = {}) {
+    return new NetworkIterator(this, cidr, options, path);
   }
 
   *networkPages(options = {}) {
@@ -513,12 +547,11 @@ class Reader {
 async function open(filepath, opts, cb) {
   assert(!cb, legacyErrorMessage);
   const options = opts || {};
-  await assertNotGzipFile(filepath);
 
   const mode = normalizeMode(options.mode);
   const reader =
-    mode === MODE_BUFFER
-      ? new Reader(await readFile(filepath), options)
+    mode === MODE_MEMORY || mode === MODE_BUFFER
+      ? await Reader.openOwned(filepath, mode, options)
       : Reader.open(filepath, options);
 
   if (options.watchForUpdates) {
@@ -559,7 +592,7 @@ function validate(ipAddress) {
 }
 
 module.exports = {
-  ...native,
+  nativeVersion: native.nativeVersion,
   NetworkIterator,
   PathLookup,
   Reader,

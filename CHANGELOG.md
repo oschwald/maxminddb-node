@@ -5,6 +5,81 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Added `reloadAsync()` to open and validate replacement databases without
+  blocking the JavaScript event loop.
+- Added `getPaths()` and `getManyPaths()` for decoding multiple selected values
+  with one database lookup per IP.
+- Added `networksPath()` and `withinPath()` for selectively decoding one value
+  while iterating database networks.
+
+### Changed
+
+- Numeric path components now reject fractional, non-finite, and unsafe
+  JavaScript numbers instead of relying on native integer coercion.
+- Updated the Rust `maxminddb` dependency to 0.30.0, inheriting safer corrupt
+  database traversal and faster path and record decoding.
+- Invalid UTF-8 in decoded MMDB string values and map keys now follows Node's
+  native conversion behavior and is represented with replacement characters.
+- `MODE_BUFFER` now uses the same native owned-memory reader as `MODE_MEMORY`;
+  the constant remains available as a compatibility alias.
+- Network iterators now close their native cursor when a `for...of` loop exits
+  early.
+- Compiled `PathLookup` instances can be closed explicitly, release their
+  native path automatically after collection, and survive watched reader swaps.
+- Consolidated mutable native reader state behind one runtime borrow, keeping
+  reentrant JavaScript access safe without per-field borrow checks.
+- Stopped exposing undocumented native reader constructors and helpers from the
+  JavaScript entry point, leaving `nativeVersion()` as the supported diagnostic.
+
+### Fixed
+
+- Preserved complete invalid IP values in errors when an overlong string crosses
+  the native UTF-8 buffer boundary at a multibyte character.
+
+### Performance
+
+- Moved asynchronous reload work, including memory-mapped reloads triggered by
+  file watchers, off the JavaScript event loop.
+- Added multi-field projections that reuse one search-tree lookup per IP,
+  improving batch throughput when several fields are needed without decoding
+  the full record.
+- Moved gzip input detection into the native readers, checking owned-file
+  prefixes before allocating their buffers and eliminating an extra
+  asynchronous file open, read, and close during path-based opens.
+- Decode MMDB strings and map keys directly from raw bytes into JavaScript
+  strings, avoiding redundant UTF-8 decoding in Rust and Node.
+- Reduced lookup and batch allocation by reading IP strings directly from V8
+  and constructing batch result arrays in place.
+- Reuse records with shared data offsets within cached network cursor pages,
+  avoiding repeated decoding during large network walks.
+- Format network strings on the stack and construct network-result pairs in
+  place, avoiding two heap allocations per iterated network.
+- Construct decoded arrays and objects in a single pass and carry JavaScript
+  decode context through nested values, reducing allocations and TLS access.
+- Use a protected LRU segment for caches up to 10,000 records, retaining
+  frequently reused records during broad scans without increasing capacity.
+- Open owned-memory file modes on a worker thread and read directly into Rust
+  memory, avoiding a full intermediate Node `Buffer` and event-loop blocking.
+- Store common compiled paths inline, avoiding a heap allocation on each hot
+  path lookup.
+- Return native network pages directly when no buffered records remain,
+  avoiding an extra JavaScript array allocation and copy per page.
+- Enable thin link-time optimization for release builds, reducing the native
+  binary size and allowing optimization across crate boundaries.
+
+### Development
+
+- Corrected projection benchmark found counts to exclude rows containing only
+  missing values.
+- Added focused unit coverage for the custom IPv4 parser, IPv4 prefix
+  translation, signed path indexes, and inline path storage boundary.
+- Removed the unused eager native network collector; the public API continues
+  to use the lower-memory native cursor implementation.
+
 ## [0.2.1] - 2026-07-03
 
 * Test fix. No other changes.
@@ -83,5 +158,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Rust formatting, `cargo check`, clippy, TypeScript, Node test, npm pack,
   and packed-package smoke-test validation.
 
+[Unreleased]: https://github.com/oschwald/maxminddb-node/compare/v0.2.1...HEAD
 [0.2.0]: https://github.com/oschwald/maxminddb-node/releases/tag/v0.2.0
 [0.1.0]: https://github.com/oschwald/maxminddb-node/releases/tag/v0.1.0

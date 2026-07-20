@@ -193,15 +193,20 @@ export interface CacheStats {
   readonly evictions: number;
 }
 
+export type LookupPath = ReadonlyArray<string | number>;
+
 export declare class PathLookup<TValue = unknown> {
   readonly path: ReadonlyArray<string | number>;
   get(ipAddress: string): TValue | null;
   getMany(ipAddresses: ReadonlyArray<string>): Array<TValue | null>;
+  close(): void;
 }
 
-export declare class NetworkIterator<T extends Response = Response>
+export declare class NetworkIterator<T = Response>
   implements IterableIterator<[string, T | null]> {
+  readonly path: ReadonlyArray<string | number> | null;
   next(): IteratorResult<[string, T | null]>;
+  return(): IteratorReturnResult<undefined>;
   nextPage(pageSize?: number): Array<[string, T | null]>;
   pages(pageSize?: number): IterableIterator<Array<[string, T | null]>>;
   close(): void;
@@ -220,22 +225,40 @@ export declare class Reader<T extends Response = Response> {
   metadata: Metadata;
   load(database: Buffer): void;
   reload(): void;
+  reloadAsync(): Promise<void>;
   close(): void;
   clearCache(): void;
   cacheStats(): CacheStats;
   get(ipAddress: string): T | null;
-  getPath(ipAddress: string, path: ReadonlyArray<string | number>): unknown;
+  getPath(ipAddress: string, path: LookupPath): unknown;
+  getPaths<TValues extends ReadonlyArray<unknown> = unknown[]>(
+    ipAddress: string,
+    paths: ReadonlyArray<LookupPath>,
+  ): TValues;
   path<TValue = unknown>(
-    path: ReadonlyArray<string | number>,
+    path: LookupPath,
   ): PathLookup<TValue>;
   getWithPrefixLength(ipAddress: string): [T | null, number];
   getMany(ipAddresses: ReadonlyArray<string>): Array<T | null>;
   getManyPath(
     ipAddresses: ReadonlyArray<string>,
-    path: ReadonlyArray<string | number>,
+    path: LookupPath,
   ): unknown[];
+  getManyPaths<TValues extends ReadonlyArray<unknown> = unknown[]>(
+    ipAddresses: ReadonlyArray<string>,
+    paths: ReadonlyArray<LookupPath>,
+  ): TValues[];
   networks(options?: NetworkPagesOptions): NetworkIterator<T>;
   within(cidr: string, options?: NetworkPagesOptions): NetworkIterator<T>;
+  networksPath<TValue = unknown>(
+    path: ReadonlyArray<string | number>,
+    options?: NetworkPagesOptions,
+  ): NetworkIterator<TValue>;
+  withinPath<TValue = unknown>(
+    cidr: string,
+    path: ReadonlyArray<string | number>,
+    options?: NetworkPagesOptions,
+  ): NetworkIterator<TValue>;
   networkPages(
     options?: NetworkPagesOptions,
   ): IterableIterator<Array<[string, T | null]>>;
