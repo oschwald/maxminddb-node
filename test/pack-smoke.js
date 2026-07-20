@@ -63,7 +63,10 @@ let tarball = null;
 
 try {
   const packOutput = execNpmOutput(['pack', '--json']);
-  const [packInfo] = JSON.parse(packOutput);
+  const parsedPackOutput = JSON.parse(packOutput);
+  const packInfo = Array.isArray(parsedPackOutput)
+    ? parsedPackOutput.find((entry) => entry.name === packageName)
+    : parsedPackOutput?.[packageName];
   if (!packInfo?.filename) {
     throw new Error(`Unexpected npm pack output: ${packOutput}`);
   }
