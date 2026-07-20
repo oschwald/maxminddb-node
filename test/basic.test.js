@@ -14,7 +14,7 @@ const dataDir = path.join(
 );
 
 test('loads native binding', () => {
-  assert.equal(maxmind.nativeVersion(), '0.3.0');
+  assert.equal(maxmind.nativeVersion(), '0.3.1');
   assert.equal(maxmind.NativeReader, undefined);
   assert.equal(maxmind.NativeNetworkCursor, undefined);
   assert.equal(maxmind.openReader, undefined);
