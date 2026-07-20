@@ -44,8 +44,15 @@ test('benchmark can skip network iteration benchmarks', () => {
 
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout);
-  const labels = output.dbs.flatMap((db) =>
-    db.benchmarks.map((benchmark) => benchmark.label)
-  );
+  const benchmarks = output.dbs.flatMap((db) => db.benchmarks);
+  const labels = benchmarks.map((benchmark) => benchmark.label);
   assert(!labels.includes('withinPages default cache'));
+
+  const fullBatch = benchmarks.find(
+    (benchmark) => benchmark.label === 'getMany default cache'
+  );
+  for (const label of ['getManyPaths 3 fields', 'getManyPaths 5 fields']) {
+    const projection = benchmarks.find((benchmark) => benchmark.label === label);
+    assert.equal(projection.found, fullBatch.found);
+  }
 });

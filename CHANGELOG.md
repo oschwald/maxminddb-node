@@ -73,6 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Development
 
+- Corrected projection benchmark found counts to exclude rows containing only
+  missing values.
 - Added focused unit coverage for the custom IPv4 parser, IPv4 prefix
   translation, signed path indexes, and inline path storage boundary.
 - Removed the unused eager native network collector; the public API continues

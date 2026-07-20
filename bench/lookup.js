@@ -214,19 +214,28 @@ function benchLookup(label, reader, ips, warmupCount, lookup, dbResult, options)
   return result;
 }
 
-function benchMany(label, reader, ips, warmupCount, lookupMany, dbResult, options) {
+function benchMany(
+  label,
+  reader,
+  ips,
+  warmupCount,
+  lookupMany,
+  dbResult,
+  options,
+  isFound = (value) => value !== null
+) {
   warmup(reader, ips, warmupCount, (r, ip) => r.get(ip));
   gc();
 
   const start = process.hrtime.bigint();
   const values = lookupMany(reader, ips);
+  const elapsed = Number(process.hrtime.bigint() - start) / 1e9;
   let found = 0;
   for (const value of values) {
-    if (value) {
+    if (isFound(value)) {
       found += 1;
     }
   }
-  const elapsed = Number(process.hrtime.bigint() - start) / 1e9;
   const result = {
     label,
     count: ips.length,
@@ -373,7 +382,8 @@ async function benchDatabase(db, options, ips, nodeMaxmind) {
     (reader, values) =>
       reader.getManyPaths(values, PROJECTION_PATHS.slice(0, 3)),
     dbResult,
-    options
+    options,
+    (row) => row.some((value) => value !== null)
   );
   benchMany(
     'getManyPaths 5 fields',
@@ -382,7 +392,8 @@ async function benchDatabase(db, options, ips, nodeMaxmind) {
     options.warmup,
     (reader, values) => reader.getManyPaths(values, PROJECTION_PATHS),
     dbResult,
-    options
+    options,
+    (row) => row.some((value) => value !== null)
   );
   benchMany(
     'path.getMany country.iso',
