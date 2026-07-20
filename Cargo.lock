@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "maxminddb-node"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "arrayvec",
  "ipnetwork",
