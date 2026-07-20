@@ -42,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added multi-field projections that reuse one search-tree lookup per IP,
   improving batch throughput when several fields are needed without decoding
   the full record.
-- Moved gzip input detection into the native readers, eliminating an extra
+- Moved gzip input detection into the native readers, checking owned-file
+  prefixes before allocating their buffers and eliminating an extra
   asynchronous file open, read, and close during path-based opens.
 - Decode MMDB strings and map keys directly from raw bytes into JavaScript
   strings, avoiding redundant UTF-8 decoding in Rust and Node.

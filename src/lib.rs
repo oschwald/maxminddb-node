@@ -25,12 +25,7 @@ use napi::{
 };
 use napi_derive::napi;
 use std::{
-    collections::HashMap,
-    fs::{self, File},
-    net::IpAddr,
-    num::NonZeroUsize,
-    path::Path,
-    sync::Arc,
+    collections::HashMap, fs::File, io::Read, net::IpAddr, num::NonZeroUsize, path::Path, sync::Arc,
 };
 
 const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
@@ -652,7 +647,31 @@ fn open_mmap_reader(path: &Path) -> Result<MaxMindReader<Mmap>> {
 }
 
 fn open_memory_reader(path: &Path) -> Result<MaxMindReader<Vec<u8>>> {
-    let bytes = fs::read(path)
+    let mut file = File::open(path)
+        .map_err(MaxMindDbError::Io)
+        .map_err(open_error)?;
+    let mut prefix = [0_u8; 2];
+    let mut prefix_len = 0;
+    while prefix_len < prefix.len() {
+        let read = file
+            .read(&mut prefix[prefix_len..])
+            .map_err(MaxMindDbError::Io)
+            .map_err(open_error)?;
+        if read == 0 {
+            break;
+        }
+        prefix_len += read;
+    }
+    reject_gzip(&prefix[..prefix_len])?;
+
+    let capacity = file
+        .metadata()
+        .ok()
+        .and_then(|metadata| usize::try_from(metadata.len()).ok())
+        .unwrap_or(prefix_len);
+    let mut bytes = Vec::with_capacity(capacity);
+    bytes.extend_from_slice(&prefix[..prefix_len]);
+    file.read_to_end(&mut bytes)
         .map_err(MaxMindDbError::Io)
         .map_err(open_error)?;
     reader_from_bytes(bytes)
