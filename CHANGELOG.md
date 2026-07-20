@@ -158,6 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Rust formatting, `cargo check`, clippy, TypeScript, Node test, npm pack,
   and packed-package smoke-test validation.
 
-[Unreleased]: https://github.com/oschwald/maxminddb-node/compare/v0.2.1...HEAD
+[0.3.0]: https://github.com/oschwald/maxminddb-node/releases/tag/v0.3.0
+[0.2.1]: https://github.com/oschwald/maxminddb-node/releases/tag/v0.2.1
 [0.2.0]: https://github.com/oschwald/maxminddb-node/releases/tag/v0.2.0
 [0.1.0]: https://github.com/oschwald/maxminddb-node/releases/tag/v0.1.0
