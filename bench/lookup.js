@@ -222,20 +222,28 @@ function benchMany(
   lookupMany,
   dbResult,
   options,
-  isFound = (value) => value !== null
+  isFound
 ) {
   warmup(reader, ips, warmupCount, (r, ip) => r.get(ip));
   gc();
 
   const start = process.hrtime.bigint();
   const values = lookupMany(reader, ips);
-  const elapsed = Number(process.hrtime.bigint() - start) / 1e9;
   let found = 0;
-  for (const value of values) {
-    if (isFound(value)) {
-      found += 1;
+  if (isFound) {
+    for (const value of values) {
+      if (isFound(value)) {
+        found += 1;
+      }
+    }
+  } else {
+    for (const value of values) {
+      if (value) {
+        found += 1;
+      }
     }
   }
+  const elapsed = Number(process.hrtime.bigint() - start) / 1e9;
   const result = {
     label,
     count: ips.length,
