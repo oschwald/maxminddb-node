@@ -308,6 +308,7 @@ class Reader {
     this._lastReloadError = null;
     this._cacheCapacity = normalizeCacheCapacity(options);
     this._reader = new native.NativeReader(database, this._cacheCapacity);
+    this._get = this._reader.bindGet();
     this.metadata = normalizeMetadata(this._reader.metadata());
     this.options = options;
   }
@@ -347,6 +348,7 @@ class Reader {
     reader._lastReloadError = null;
     reader._cacheCapacity = normalizeCacheCapacity(options);
     reader._reader = nativeReader;
+    reader._get = nativeReader.bindGet();
     reader.metadata = normalizeMetadata(reader._reader.metadata());
     reader.options = options;
     return reader;
@@ -408,8 +410,10 @@ class Reader {
 
   _replaceNativeReader(replacement) {
     const metadata = normalizeMetadata(replacement.metadata());
+    const get = replacement.bindGet();
     const previous = this._reader;
     this._reader = replacement;
+    this._get = get;
     this.metadata = metadata;
     this._lastReloadError = null;
     previous.close();
@@ -488,7 +492,7 @@ class Reader {
   }
 
   get(ipAddress) {
-    return this._reader.get(ipAddress);
+    return this._get(ipAddress);
   }
 
   getPath(ipAddress, path) {
