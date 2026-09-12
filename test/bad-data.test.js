@@ -2,7 +2,6 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
@@ -227,18 +226,15 @@ for (const mode of modes) {
       badDataError
     );
 
-    const directory = fs.mkdtempSync(
-      path.join(os.tmpdir(), 'maxminddb-resource-limit-')
+    const reader = await maxmind.open(
+      path.join(dataDir, 'GeoIP2-City-Test.mmdb'),
+      { mode }
     );
-    const database = path.join(directory, 'database.mmdb');
-    fs.copyFileSync(path.join(dataDir, 'GeoIP2-City-Test.mmdb'), database);
-    const reader = await maxmind.open(database, { mode });
     try {
       const original = reader.get('81.2.69.142');
-      // Replace the file without modifying the inode used by an active mmap.
-      const replacement = path.join(directory, 'replacement.mmdb');
-      fs.copyFileSync(metadataLimit, replacement);
-      fs.renameSync(replacement, database);
+      // Exercise reload failures without replacing an actively mapped file,
+      // which Windows prohibits. The existing reader keeps its original map.
+      reader._filepath = metadataLimit;
 
       assert.throws(() => reader.reload(), badDataError);
       assert.equal(reader.lastReloadError.message, badDataError.message);
@@ -248,7 +244,6 @@ for (const mode of modes) {
       assert.strictEqual(reader.get('81.2.69.142'), original);
     } finally {
       reader.close();
-      fs.rmSync(directory, { recursive: true, force: true });
     }
   });
 
