@@ -70,6 +70,8 @@ for (const limit of ['value', 'payload']) {
         ),
         { cache }
       );
+      // path() calls native compilePath(); the resulting get()/getMany()
+      // methods call getCompiledPath()/getManyCompiledPath() with that ID.
       const root = reader.path([]);
       try {
         const operations = {
@@ -93,6 +95,10 @@ for (const limit of ['value', 'payload']) {
         );
         assert.equal(reader.get('1.1.1.1').uint16, 100);
         assert.equal(root.get('1.1.1.1').uint16, 100);
+        assert.deepEqual(
+          root.getMany(['1.1.1.1']).map((record) => record.uint16),
+          [100]
+        );
       } finally {
         root.close();
         reader.close();
