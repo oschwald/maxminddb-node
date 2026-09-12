@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paths, and network iteration, as well as metadata during opens and reloads.
 - Refreshed Rust and npm development dependencies.
 
+### Performance
+
+- Bind single-record `get()` calls to a validated native reader once, avoiding
+  repeated receiver validation and generic borrow tracking in the updated
+  N-API bindings. Bound calls retain the reader, use its existing reentrancy
+  protection, and follow loads and reloads.
+
 ### Development
 
 - Added regression coverage for decoding limits, records at the supported

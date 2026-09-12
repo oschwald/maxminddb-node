@@ -1,3 +1,4 @@
+mod bound;
 mod cache;
 mod decode;
 mod errors;
@@ -19,7 +20,8 @@ use maxminddb::{MaxMindDbError, Mmap, Reader as MaxMindReader, WithinOptions};
 use memmap2::MmapOptions;
 use napi::{
     bindgen_prelude::{
-        Array, AsyncTask, Buffer, Either, Env, Object, ObjectFinalize, ToNapiValue, Unknown,
+        Array, AsyncTask, Buffer, Either, Env, Object, ObjectFinalize, Reference, ToNapiValue,
+        Unknown,
     },
     JsString, Result, Task,
 };
@@ -301,6 +303,15 @@ impl NativeReader {
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         reader.lookup_record_to_js(env, ip, &mut state.cache, &mut state.property_names)
+    }
+
+    #[napi(js_name = "bindGet")]
+    pub fn bind_get<'env>(
+        &self,
+        env: &'env Env,
+        reader: Reference<NativeReader>,
+    ) -> Result<Unknown<'env>> {
+        bound::bind_get(env, reader)
     }
 
     #[napi(js_name = "getPath")]
