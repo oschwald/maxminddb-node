@@ -29,7 +29,7 @@ pub(crate) fn metadata_to_js<'env>(
     object.set_named_property("nodeByteSize", meta.record_size / 4)?;
     object.set_named_property(
         "searchTreeSize",
-        meta.node_count * (meta.record_size as u32 / 4),
+        search_tree_size(meta.node_count, meta.record_size),
     )?;
     object.set_named_property(
         "treeDepth",
@@ -40,4 +40,27 @@ pub(crate) fn metadata_to_js<'env>(
         },
     )?;
     Ok(object)
+}
+
+fn search_tree_size(node_count: u32, record_size: u16) -> f64 {
+    f64::from(node_count) * f64::from(record_size / 4)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::search_tree_size;
+
+    #[test]
+    fn search_tree_size_preserves_values_across_u32_boundary() {
+        for (record_size, boundary) in [(24, 715_827_883), (28, 613_566_757), (32, 536_870_912)] {
+            for node_count in [0, 1, 1000, boundary - 1, boundary, boundary + 1, u32::MAX] {
+                let expected = u64::from(node_count) * u64::from(record_size / 4);
+                assert_eq!(
+                    search_tree_size(node_count, record_size),
+                    expected as f64,
+                    "node_count={node_count}, record_size={record_size}"
+                );
+            }
+        }
+    }
 }
