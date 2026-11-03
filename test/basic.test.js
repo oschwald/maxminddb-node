@@ -274,6 +274,176 @@ test('closes network cursors when iteration stops early', async () => {
   reader.close();
 });
 
+for (const method of ['pages', 'networkPages', 'withinPages']) {
+  test(`${method} closes page cursors when iteration finishes`, async (t) => {
+    for (const exit of ['return', 'break', 'loop error', 'throw', 'exhaustion']) {
+      await t.test(exit, async () => {
+        const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+        const cidr = '81.2.69.0/24';
+        const iteratorMethod = method === 'networkPages' ? 'networks' : 'within';
+        const args = iteratorMethod === 'networks' ? [] : [cidr];
+        const expected = [...reader[iteratorMethod](...args)];
+        const createIterator = reader[iteratorMethod].bind(reader);
+        let iterator;
+        reader[iteratorMethod] = (...iteratorArgs) => {
+          iterator = createIterator(...iteratorArgs);
+          return iterator;
+        };
+        const pages = method === 'pages'
+          ? reader.within(cidr, { pageSize: 3 }).pages(1)
+          : method === 'networkPages'
+            ? reader.networkPages({ pageSize: 1 })
+            : reader.withinPages(cidr, { pageSize: 1 });
+        const error = new Error('page consumer failed');
+
+        try {
+          if (method === 'pages') {
+            // Leave buffered records in iterator._page before stopping page iteration.
+            assert.deepEqual(iterator.next().value, expected.shift());
+          }
+          if (exit === 'return' || exit === 'throw') {
+            assert.deepEqual(pages.next().value, expected.slice(0, 1));
+            if (exit === 'return') {
+              assert.deepEqual(pages.return(), { done: true, value: undefined });
+            } else {
+              assert.throws(() => pages.throw(error), (caught) => caught === error);
+            }
+          } else if (exit === 'break') {
+            for (const page of pages) {
+              assert.deepEqual(page, expected.slice(0, 1));
+              break;
+            }
+          } else if (exit === 'loop error') {
+            assert.throws(() => {
+              for (const page of pages) {
+                assert.deepEqual(page, expected.slice(0, 1));
+                throw error;
+              }
+            }, (caught) => caught === error);
+          } else {
+            assert.deepEqual([...pages].flat(), expected);
+          }
+
+          assert.equal(iterator._done, true);
+          assert.deepEqual(iterator._page, []);
+          assert.deepEqual(iterator._cursor.nextPage(1), []);
+          assert.deepEqual(iterator.next(), { done: true, value: undefined });
+          assert.deepEqual(iterator.nextPage(), []);
+          assert.deepEqual(pages.next(), { done: true, value: undefined });
+          assert.deepEqual(pages.return(), { done: true, value: undefined });
+          iterator.close();
+          assert.equal(reader.get('81.2.69.142').country.iso_code, 'GB');
+        } finally {
+          iterator?.close();
+          reader.close();
+        }
+      });
+    }
+  });
+
+  test(`${method} closes page cursors on decoding errors`, async () => {
+    const reader = await maxmind.open(
+      path.join(dataDir, 'MaxMind-DB-test-decoder-value-limit-over.mmdb')
+    );
+    const iteratorMethod = method === 'networkPages' ? 'networks' : 'within';
+    const createIterator = reader[iteratorMethod].bind(reader);
+    let iterator;
+    reader[iteratorMethod] = (...args) => {
+      iterator = createIterator(...args);
+      return iterator;
+    };
+    const pages = method === 'pages'
+      ? reader.within('1.2.3.0/24', { pageSize: 1 }).pages()
+      : method === 'networkPages'
+        ? reader.networkPages({ pageSize: 1 })
+        : reader.withinPages('1.2.3.0/24', { pageSize: 1 });
+
+    try {
+      assert.throws(() => pages.next(), {
+        code: 'GenericFailure',
+        message: "The MaxMind DB file's data section contains bad data (unknown data type or corrupt data)",
+      });
+      assert.equal(iterator._done, true);
+      assert.deepEqual(iterator._cursor.nextPage(1), []);
+      assert.deepEqual(iterator.next(), { done: true, value: undefined });
+      assert.deepEqual(pages.next(), { done: true, value: undefined });
+    } finally {
+      iterator?.close();
+      reader.close();
+    }
+  });
+}
+
+test('next and nextPage close network cursors on decoding errors', async () => {
+  const reader = await maxmind.open(
+    path.join(dataDir, 'MaxMind-DB-test-decoder-value-limit-over.mmdb')
+  );
+  const badDataError = {
+    code: 'GenericFailure',
+    message: "The MaxMind DB file's data section contains bad data (unknown data type or corrupt data)",
+  };
+
+  try {
+    for (const step of [
+      (iterator) => iterator.next(),
+      (iterator) => iterator.nextPage(1),
+      (iterator) => {
+        iterator._page = [['1.2.3.0/25', null]];
+        return iterator.nextPage(2);
+      },
+    ]) {
+      const iterator = reader.within('1.2.3.0/24', { pageSize: 1 });
+      try {
+        assert.throws(() => step(iterator), badDataError);
+        assert.equal(iterator._done, true);
+        assert.deepEqual(iterator._page, []);
+        assert.deepEqual(iterator._cursor.nextPage(1), []);
+        assert.deepEqual(iterator.next(), { done: true, value: undefined });
+        assert.deepEqual(iterator.nextPage(), []);
+      } finally {
+        iterator.close();
+      }
+    }
+  } finally {
+    reader.close();
+  }
+});
+
+test('invalid page sizes leave the network cursor usable', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const iterator = reader.within('81.2.69.0/24', { pageSize: 1 });
+
+  try {
+    for (const pageSize of [0, -1, 1.5, NaN, Infinity, 0x100000000]) {
+      assert.throws(() => iterator.nextPage(pageSize), /page size should be a positive 32-bit integer/);
+      assert.equal(iterator._done, false);
+      const pages = iterator.pages(pageSize);
+      assert.equal(iterator._done, false);
+      assert.throws(() => pages.next(), /page size should be a positive 32-bit integer/);
+      assert.equal(iterator._done, false);
+    }
+    assert.equal(iterator.nextPage().length, 1);
+  } finally {
+    iterator.close();
+    reader.close();
+  }
+});
+
+test('returning an unstarted page generator leaves its cursor usable', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const iterator = reader.within('81.2.69.0/24', { pageSize: 1 });
+
+  try {
+    const pages = iterator.pages();
+    assert.deepEqual(pages.return(), { done: true, value: undefined });
+    assert.equal(iterator._done, false);
+    assert.equal(iterator.nextPage().length, 1);
+  } finally {
+    iterator.close();
+    reader.close();
+  }
+});
+
 test('selectively decodes paths while iterating networks', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
   const iterator = reader.withinPath(

@@ -224,10 +224,9 @@ class NetworkIterator {
     }
 
     if (this._index >= this._page.length) {
-      this._page = this._cursor.nextPage(this._pageSize);
+      this._page = this._readNativePage(this._pageSize);
       this._index = 0;
-      if (this._page.length === 0) {
-        this.close();
+      if (this._done) {
         return { done: true, value: undefined };
       }
     }
@@ -246,11 +245,7 @@ class NetworkIterator {
     if (this._index >= this._page.length) {
       this._page = [];
       this._index = 0;
-      const page = this._cursor.nextPage(pageSize);
-      if (page.length === 0) {
-        this.close();
-      }
-      return page;
+      return this._readNativePage(pageSize);
     }
 
     const page = [];
@@ -260,12 +255,9 @@ class NetworkIterator {
     }
 
     if (page.length < pageSize) {
-      const nativePage = this._cursor.nextPage(pageSize - page.length);
+      const nativePage = this._readNativePage(pageSize - page.length);
       for (const record of nativePage) {
         page.push(record);
-      }
-      if (nativePage.length === 0) {
-        this.close();
       }
     }
 
@@ -274,12 +266,29 @@ class NetworkIterator {
 
   *pages(pageSize = this._pageSize) {
     pageSize = normalizeNetworkPageSize(pageSize);
-    while (true) {
-      const page = this.nextPage(pageSize);
-      if (page.length === 0) {
-        return;
+    try {
+      while (true) {
+        const page = this.nextPage(pageSize);
+        if (page.length === 0) {
+          return;
+        }
+        yield page;
       }
-      yield page;
+    } finally {
+      this.close();
+    }
+  }
+
+  _readNativePage(pageSize) {
+    try {
+      const page = this._cursor.nextPage(pageSize);
+      if (page.length === 0) {
+        this.close();
+      }
+      return page;
+    } catch (error) {
+      this.close();
+      throw error;
     }
   }
 
@@ -540,11 +549,11 @@ class Reader {
   }
 
   *networkPages(options = {}) {
-    yield* this.networks(options).pages(options.pageSize ?? 1000);
+    yield* this.networks(options).pages();
   }
 
   *withinPages(cidr, options = {}) {
-    yield* this.within(cidr, options).pages(options.pageSize ?? 1000);
+    yield* this.within(cidr, options).pages();
   }
 }
 
