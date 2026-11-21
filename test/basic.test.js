@@ -535,7 +535,9 @@ test('network cursors keep a reader snapshot', async () => {
 });
 
 test('closes reader', async () => {
-  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const dbPath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  const reader = await maxmind.open(dbPath);
+  const database = fs.readFileSync(dbPath);
 
   assert.equal(reader.closed, false);
   reader.close();
@@ -567,8 +569,46 @@ test('closes reader', async () => {
     () => reader.within('81.2.69.0/24'),
     /closed MaxMind DB/
   );
+  assert.throws(() => reader.load(database), /Cannot load into a closed Reader/);
+  assert.throws(() => reader.reload(), /Cannot reload a closed Reader/);
+  await assert.rejects(() => reader.reloadAsync(), /Cannot reload a closed Reader/);
+  assert.equal(reader.lastReloadError, null);
+  assert.equal(reader.closed, true);
   assert.equal(reader.cacheStats().enabled, true);
   assert.doesNotThrow(() => reader.clearCache());
+
+  const ipv4Reader = await maxmind.open(
+    path.join(dataDir, 'MaxMind-DB-test-ipv4-24.mmdb')
+  );
+  ipv4Reader.close();
+  assert.throws(() => ipv4Reader.get('2001:db8::1'), /closed MaxMind DB/);
+  assert.throws(() => ipv4Reader.getMany(['2001:db8::1']), /closed MaxMind DB/);
+
+  const concurrent = await maxmind.open(dbPath, { mode: maxmind.MODE_MEMORY });
+  concurrent._filepath = path.join(dataDir, 'does-not-exist.mmdb');
+  const pendingReload = concurrent.reloadAsync();
+  concurrent.close();
+  await assert.rejects(() => pendingReload, /Cannot reload a closed Reader/);
+  assert.equal(concurrent.lastReloadError, null);
+
+  const swapCloseFails = await maxmind.open(dbPath, { mode: maxmind.MODE_MEMORY });
+  try {
+    const previousNative = swapCloseFails._reader;
+    const originalClose = previousNative.close.bind(previousNative);
+    previousNative.close = () => {
+      throw new Error('close failed');
+    };
+    try {
+      await assert.rejects(() => swapCloseFails.reloadAsync(), /close failed/);
+      assert.equal(swapCloseFails.closed, false);
+      assert.equal(swapCloseFails.get('81.2.69.142').country.iso_code, 'GB');
+      assert.match(swapCloseFails.lastReloadError.message, /close failed/);
+    } finally {
+      originalClose();
+    }
+  } finally {
+    swapCloseFails.close();
+  }
 });
 
 test('rejects invalid lookup inputs', async () => {

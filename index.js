@@ -372,6 +372,9 @@ class Reader {
   }
 
   load(database) {
+    if (this.closed) {
+      throw new Error('Cannot load into a closed Reader');
+    }
     try {
       this._reader.load(database);
       this.metadata = normalizeMetadata(this._reader.metadata());
@@ -385,6 +388,9 @@ class Reader {
   reload() {
     if (!this._filepath) {
       throw new Error('Cannot reload a buffer-backed Reader');
+    }
+    if (this.closed) {
+      throw new Error('Cannot reload a closed Reader');
     }
     try {
       this._reader.reloadFromFile(this._filepath, this._mode);
@@ -400,18 +406,36 @@ class Reader {
     if (!this._filepath) {
       throw new Error('Cannot reload a buffer-backed Reader');
     }
+    if (this.closed) {
+      throw new Error('Cannot reload a closed Reader');
+    }
+    let replacement;
     try {
-      const replacement = await native.openReaderAsync(
+      replacement = await native.openReaderAsync(
         this._filepath,
         this._mode,
         this._cacheCapacity
       );
+    } catch (error) {
       if (this.closed) {
-        replacement.close();
         throw new Error('Cannot reload a closed Reader');
       }
+      this._lastReloadError = error;
+      throw error;
+    }
+    if (this.closed) {
+      replacement.close();
+      throw new Error('Cannot reload a closed Reader');
+    }
+    try {
       this._replaceNativeReader(replacement);
     } catch (error) {
+      if (this._reader !== replacement) {
+        replacement.close();
+      }
+      if (this.closed) {
+        throw new Error('Cannot reload a closed Reader');
+      }
       this._lastReloadError = error;
       throw error;
     }

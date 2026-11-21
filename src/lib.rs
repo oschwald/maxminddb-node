@@ -258,12 +258,18 @@ impl NativeReader {
 
     #[napi]
     pub fn load(&self, env: &Env, database: Buffer) -> Result<()> {
+        if self.state()?.reader.is_none() {
+            return Err(invalid_arg(ERR_CLOSED_DB));
+        }
         let new_reader = Self::reader_from_bytes(database.as_ref().to_vec())?;
         self.replace_reader(env, new_reader)
     }
 
     #[napi(js_name = "reloadFromFile")]
     pub fn reload_from_file(&self, env: &Env, path: String, mode: Option<String>) -> Result<()> {
+        if self.state()?.reader.is_none() {
+            return Err(invalid_arg(ERR_CLOSED_DB));
+        }
         let new_reader = open_source(&path, mode.as_deref())?;
         self.replace_reader(env, new_reader)
     }
@@ -560,12 +566,18 @@ impl NativeReader {
 
     fn lookup_state(&self, ip: IpAddr) -> Result<RefMut<'_, NativeReaderState>> {
         let state = self.state_mut()?;
+        if state.reader.is_none() {
+            return Err(invalid_arg(ERR_CLOSED_DB));
+        }
         validate_lookup_ip(state.ip_version, ip)?;
         Ok(state)
     }
 
     fn lookup_state_for_ips(&self, ips: &[IpAddr]) -> Result<RefMut<'_, NativeReaderState>> {
         let state = self.state_mut()?;
+        if state.reader.is_none() {
+            return Err(invalid_arg(ERR_CLOSED_DB));
+        }
         for &ip in ips {
             validate_lookup_ip(state.ip_version, ip)?;
         }
@@ -591,6 +603,9 @@ impl NativeReader {
 
 impl NativeReaderState {
     fn replace_reader(&mut self, env: &Env, new_reader: ReaderSource) -> Result<()> {
+        if self.reader.is_none() {
+            return Err(invalid_arg(ERR_CLOSED_DB));
+        }
         self.clear_record_cache(env)?;
         self.clear_property_names();
         self.ip_version = new_reader.metadata().ip_version;

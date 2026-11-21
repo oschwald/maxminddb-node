@@ -20,6 +20,11 @@ use std::{
 const MAX_PROPERTY_NAME_CACHE_ENTRIES: usize = 4_096;
 const MAX_PROPERTY_NAME_KEY_BYTES: usize = 64;
 
+// Use a two-segment SLRU (20% protected, 80% probationary) for smaller caches
+// (including the default 10,000-entry cache) to resist scan pollution. Larger
+// caches already absorb working-set churn and avoid the extra segment lookup.
+const SLRU_MAX_CAPACITY: usize = 10_000;
+
 pub(crate) struct RecordCache {
     probationary: LruCache<usize, UnknownRef>,
     protected: Option<LruCache<usize, UnknownRef>>,
@@ -125,7 +130,7 @@ impl PropertyNameCache {
 
 impl RecordCache {
     pub(crate) fn new(capacity: NonZeroUsize) -> Self {
-        let protected_capacity = if capacity.get() <= 10_000 {
+        let protected_capacity = if capacity.get() <= SLRU_MAX_CAPACITY {
             NonZeroUsize::new(capacity.get() / 5)
         } else {
             None
@@ -156,12 +161,14 @@ impl RecordCache {
                 return value.get_value(env).map(Some);
             }
 
-            if let Some(value) = self.probationary.pop(&offset) {
+            if let Some(value) = self.probationary.peek(&offset) {
                 let result = value.get_value(env)?;
-                if let Some((demoted_offset, demoted)) = protected.push(offset, value) {
-                    debug_assert_ne!(demoted_offset, offset);
-                    let evicted = self.probationary.push(demoted_offset, demoted);
-                    debug_assert!(evicted.is_none());
+                if let Some(value) = self.probationary.pop(&offset) {
+                    if let Some((demoted_offset, demoted)) = protected.push(offset, value) {
+                        debug_assert_ne!(demoted_offset, offset);
+                        let evicted = self.probationary.push(demoted_offset, demoted);
+                        debug_assert!(evicted.is_none());
+                    }
                 }
                 self.hits += 1;
                 return Ok(Some(result));
