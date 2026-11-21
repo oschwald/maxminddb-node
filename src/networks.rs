@@ -20,17 +20,22 @@ pub(crate) enum NetworkIter<'de> {
     Memory(Within<'de, Vec<u8>>),
 }
 
+macro_rules! dispatch_network_iter {
+    ($iter:expr, $inner:ident => $body:expr) => {
+        match $iter {
+            Self::Mmap($inner) => $body,
+            Self::Memory($inner) => $body,
+        }
+    };
+}
+
 impl<'de> NetworkIter<'de> {
     pub(crate) fn from_mmap(
         reader: &'de MaxMindReader<Mmap>,
         cidr: Option<ipnetwork::IpNetwork>,
         options: WithinOptions,
     ) -> std::result::Result<Self, MaxMindDbError> {
-        let iter = match cidr {
-            Some(cidr) => reader.within(cidr, options)?,
-            None => reader.networks(options)?,
-        };
-        Ok(Self::Mmap(iter))
+        within_iter(reader, cidr, options).map(Self::Mmap)
     }
 
     pub(crate) fn from_memory(
@@ -38,15 +43,9 @@ impl<'de> NetworkIter<'de> {
         cidr: Option<ipnetwork::IpNetwork>,
         options: WithinOptions,
     ) -> std::result::Result<Self, MaxMindDbError> {
-        let iter = match cidr {
-            Some(cidr) => reader.within(cidr, options)?,
-            None => reader.networks(options)?,
-        };
-        Ok(Self::Memory(iter))
+        within_iter(reader, cidr, options).map(Self::Memory)
     }
-}
 
-impl<'de> NetworkIter<'de> {
     fn next_record_to_js<'env>(
         &mut self,
         env: &'env Env,
@@ -54,20 +53,24 @@ impl<'de> NetworkIter<'de> {
         records_by_offset: &mut Option<HashMap<usize, Unknown<'env>>>,
         path: Option<&[maxminddb::PathElement<'_>]>,
     ) -> Result<Option<Unknown<'env>>> {
-        match self {
-            Self::Mmap(iter) => iter
-                .next()
+        dispatch_network_iter!(self, iter => {
+            iter.next()
                 .map(|result| {
                     network_lookup_to_js(env, result, property_names, records_by_offset, path)
                 })
-                .transpose(),
-            Self::Memory(iter) => iter
-                .next()
-                .map(|result| {
-                    network_lookup_to_js(env, result, property_names, records_by_offset, path)
-                })
-                .transpose(),
-        }
+                .transpose()
+        })
+    }
+}
+
+fn within_iter<'de, S: AsRef<[u8]>>(
+    reader: &'de MaxMindReader<S>,
+    cidr: Option<ipnetwork::IpNetwork>,
+    options: WithinOptions,
+) -> std::result::Result<Within<'de, S>, MaxMindDbError> {
+    match cidr {
+        Some(cidr) => reader.within(cidr, options),
+        None => reader.networks(options),
     }
 }
 

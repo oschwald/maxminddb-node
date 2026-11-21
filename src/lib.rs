@@ -47,6 +47,15 @@ enum ReaderSource {
     Memory(MaxMindReader<Vec<u8>>),
 }
 
+macro_rules! dispatch_reader {
+    ($source:expr, $reader:ident => $body:expr) => {
+        match $source {
+            ReaderSource::Mmap($reader) => $body,
+            ReaderSource::Memory($reader) => $body,
+        }
+    };
+}
+
 pub struct OpenReaderTask {
     path: String,
     mode: String,
@@ -88,16 +97,10 @@ impl ReaderSource {
         cache: &mut Option<RecordCache>,
         property_names: &mut PropertyNameCache,
     ) -> Result<Unknown<'env>> {
-        match self {
-            ReaderSource::Mmap(reader) => {
-                let result = reader.lookup(ip).map_err(lookup_error)?;
-                lookup_result_record_to_js(env, &result, cache, property_names)
-            }
-            ReaderSource::Memory(reader) => {
-                let result = reader.lookup(ip).map_err(lookup_error)?;
-                lookup_result_record_to_js(env, &result, cache, property_names)
-            }
-        }
+        dispatch_reader!(self, reader => {
+            let result = reader.lookup(ip).map_err(lookup_error)?;
+            lookup_result_record_to_js(env, &result, cache, property_names)
+        })
     }
 
     fn lookup_record_with_prefix_to_js<'env>(
@@ -107,26 +110,15 @@ impl ReaderSource {
         cache: &mut Option<RecordCache>,
         property_names: &mut PropertyNameCache,
     ) -> Result<(Unknown<'env>, usize)> {
-        match self {
-            ReaderSource::Mmap(reader) => {
-                let result = reader.lookup(ip).map_err(lookup_error)?;
-                let network = result.network().map_err(lookup_error)?;
-                let prefix = prefix_len_for_lookup(ip, network);
-                Ok((
-                    lookup_result_record_to_js(env, &result, cache, property_names)?,
-                    prefix,
-                ))
-            }
-            ReaderSource::Memory(reader) => {
-                let result = reader.lookup(ip).map_err(lookup_error)?;
-                let network = result.network().map_err(lookup_error)?;
-                let prefix = prefix_len_for_lookup(ip, network);
-                Ok((
-                    lookup_result_record_to_js(env, &result, cache, property_names)?,
-                    prefix,
-                ))
-            }
-        }
+        dispatch_reader!(self, reader => {
+            let result = reader.lookup(ip).map_err(lookup_error)?;
+            let network = result.network().map_err(lookup_error)?;
+            let prefix = prefix_len_for_lookup(ip, network);
+            Ok((
+                lookup_result_record_to_js(env, &result, cache, property_names)?,
+                prefix,
+            ))
+        })
     }
 
     fn lookup_path_to_js<'env>(
@@ -136,16 +128,10 @@ impl ReaderSource {
         path: &[maxminddb::PathElement<'_>],
         property_names: &mut PropertyNameCache,
     ) -> Result<Unknown<'env>> {
-        match self {
-            ReaderSource::Mmap(reader) => {
-                let result = reader.lookup(ip).map_err(lookup_error)?;
-                lookup_result_path_to_js(env, &result, path, property_names)
-            }
-            ReaderSource::Memory(reader) => {
-                let result = reader.lookup(ip).map_err(lookup_error)?;
-                lookup_result_path_to_js(env, &result, path, property_names)
-            }
-        }
+        dispatch_reader!(self, reader => {
+            let result = reader.lookup(ip).map_err(lookup_error)?;
+            lookup_result_path_to_js(env, &result, path, property_names)
+        })
     }
 
     fn lookup_paths_to_js<'env>(
@@ -155,23 +141,14 @@ impl ReaderSource {
         paths: &[PathElements<'_>],
         property_names: &mut PropertyNameCache,
     ) -> Result<Unknown<'env>> {
-        match self {
-            ReaderSource::Mmap(reader) => {
-                let result = reader.lookup(ip).map_err(lookup_error)?;
-                lookup_result_paths_to_js(env, &result, paths, property_names)
-            }
-            ReaderSource::Memory(reader) => {
-                let result = reader.lookup(ip).map_err(lookup_error)?;
-                lookup_result_paths_to_js(env, &result, paths, property_names)
-            }
-        }
+        dispatch_reader!(self, reader => {
+            let result = reader.lookup(ip).map_err(lookup_error)?;
+            lookup_result_paths_to_js(env, &result, paths, property_names)
+        })
     }
 
     fn metadata(&self) -> &maxminddb::Metadata {
-        match self {
-            ReaderSource::Mmap(reader) => reader.metadata(),
-            ReaderSource::Memory(reader) => reader.metadata(),
-        }
+        dispatch_reader!(self, reader => reader.metadata())
     }
 
     fn network_iter(
