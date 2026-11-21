@@ -677,23 +677,27 @@ test('keeps legacy API errors', () => {
 
 test('rejects gzip files in open', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
-  const gzipPath = path.join(dir, 'db.mmdb.gz');
-  fs.writeFileSync(gzipPath, Buffer.from([0x1f, 0x8b, 0x08, 0x00]));
+  try {
+    const gzipPath = path.join(dir, 'db.mmdb.gz');
+    fs.writeFileSync(gzipPath, Buffer.from([0x1f, 0x8b, 0x08, 0x00]));
 
-  for (const mode of [
-    maxmind.MODE_MMAP,
-    maxmind.MODE_MEMORY,
-    maxmind.MODE_BUFFER,
-  ]) {
-    await assert.rejects(
-      () => maxmind.open(gzipPath, { mode }),
+    for (const mode of [
+      maxmind.MODE_MMAP,
+      maxmind.MODE_MEMORY,
+      maxmind.MODE_BUFFER,
+    ]) {
+      await assert.rejects(
+        () => maxmind.open(gzipPath, { mode }),
+        /passing in a file in gzip format/
+      );
+    }
+    assert.throws(
+      () => new maxmind.Reader(fs.readFileSync(gzipPath)),
       /passing in a file in gzip format/
     );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
-  assert.throws(
-    () => new maxmind.Reader(fs.readFileSync(gzipPath)),
-    /passing in a file in gzip format/
-  );
 });
 
 test('opens owned-memory modes without Node-side file reads', async () => {
@@ -742,19 +746,26 @@ test('reloads file-backed readers asynchronously', async () => {
 
 test('keeps the existing reader after an asynchronous reload failure', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
-  const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
-  const dbPath = path.join(dir, 'GeoIP2-City-Test.mmdb');
-  fs.copyFileSync(sourcePath, dbPath);
+  try {
+    const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+    const dbPath = path.join(dir, 'GeoIP2-City-Test.mmdb');
+    fs.copyFileSync(sourcePath, dbPath);
 
-  const reader = await maxmind.open(dbPath, { mode: maxmind.MODE_MEMORY });
-  const previous = reader._reader;
-  fs.writeFileSync(dbPath, Buffer.from('not an mmdb'));
+    const reader = await maxmind.open(dbPath, { mode: maxmind.MODE_MEMORY });
+    try {
+      const previous = reader._reader;
+      fs.writeFileSync(dbPath, Buffer.from('not an mmdb'));
 
-  await assert.rejects(() => reader.reloadAsync(), /bad data/i);
-  assert.strictEqual(reader._reader, previous);
-  assert(reader.lastReloadError instanceof Error);
-  assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
-  reader.close();
+      await assert.rejects(() => reader.reloadAsync(), /bad data/i);
+      assert.strictEqual(reader._reader, previous);
+      assert(reader.lastReloadError instanceof Error);
+      assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
+    } finally {
+      reader.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('unwatches database files on close', async () => {
@@ -836,6 +847,7 @@ test('records and clears watched reload failures', async () => {
   } finally {
     fs.watchFile = originalWatchFile;
     fs.unwatchFile = originalUnwatchFile;
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -906,5 +918,46 @@ test('coalesces and serializes watched buffer reloads', async () => {
   } finally {
     fs.watchFile = originalWatchFile;
     fs.unwatchFile = originalUnwatchFile;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('validates watchForUpdatesHook before opening database', async () => {
+  await assert.rejects(
+    () =>
+      maxmind.open('/nonexistent/database.mmdb', {
+        watchForUpdates: true,
+        watchForUpdatesHook: 'not a function',
+      }),
+    /opts\.watchForUpdatesHook should be a function/
+  );
+});
+
+test('preserves PathLookup handle state if recompilation fails after reload', async () => {
+  const dbPath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  const reader = await maxmind.open(dbPath);
+  const firstPath = reader.path(['country', 'iso_code']);
+  let secondPath;
+  try {
+    await reader.reloadAsync();
+    secondPath = reader.path(['continent', 'code']);
+    const replacementReader = reader._reader;
+    const originalCompilePath = replacementReader.compilePath;
+    replacementReader.compilePath = () => {
+      throw new Error('simulated compile failure');
+    };
+    try {
+      assert.throws(() => firstPath.get('81.2.69.142'), /simulated compile failure/);
+    } finally {
+      replacementReader.compilePath = originalCompilePath;
+    }
+
+    // Closing firstPath must not release secondPath's compiled ID on the new reader.
+    firstPath.close();
+    assert.equal(secondPath.get('81.2.69.142'), 'EU');
+  } finally {
+    firstPath.close();
+    secondPath?.close();
+    reader.close();
   }
 });
