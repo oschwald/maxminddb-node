@@ -998,3 +998,96 @@ test('exposes named exports for ESM consumers', async () => {
     assert.strictEqual(esm[name], maxmind[name], `missing ESM named export: ${name}`);
   }
 });
+
+test('does not record watchForUpdatesHook errors as lastReloadError', async () => {
+  const originalWatchFile = fs.watchFile;
+  const originalUnwatchFile = fs.unwatchFile;
+  const watched = [];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'maxminddb-'));
+  const sourcePath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  const dbPath = path.join(dir, 'GeoIP2-City-Test.mmdb');
+  fs.copyFileSync(sourcePath, dbPath);
+
+  fs.watchFile = (filepath, options, listener) => {
+    watched.push({ filepath, options, listener });
+  };
+  fs.unwatchFile = () => {};
+
+  try {
+    const hookError = new Error('hook failed');
+    const asyncHookError = new Error('async hook failed');
+    const plainObjectError = { reason: 'x' };
+    const cases = [
+      {
+        hook() {
+          throw hookError;
+        },
+        check(warning) {
+          assert.strictEqual(warning, hookError);
+        },
+      },
+      {
+        hook() {
+          throw null;
+        },
+        check(warning) {
+          assert(warning instanceof Error);
+          assert.equal(warning.cause, null);
+        },
+      },
+      {
+        hook() {
+          throw plainObjectError;
+        },
+        check(warning) {
+          assert(warning instanceof Error);
+          assert.strictEqual(warning.cause, plainObjectError);
+        },
+      },
+      {
+        async hook() {
+          throw asyncHookError;
+        },
+        check(warning) {
+          assert.strictEqual(warning, asyncHookError);
+        },
+      },
+    ];
+
+    for (const { hook, check } of cases) {
+      watched.length = 0;
+      const warnings = [];
+      const onWarning = (warning) => {
+        warnings.push(warning);
+      };
+      process.on('warning', onWarning);
+      try {
+        const reader = await maxmind.open(dbPath, {
+          mode: maxmind.MODE_BUFFER,
+          watchForUpdates: true,
+          watchForUpdatesHook: hook,
+        });
+        const previous = reader._reader;
+        try {
+          watched[0].listener();
+          await reader._watchReloadPromise;
+          await new Promise(setImmediate);
+          await new Promise(setImmediate);
+          assert.notStrictEqual(reader._reader, previous);
+          assert.equal(reader.lastReloadError, null);
+          assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
+          assert.equal(warnings.length, 1);
+          check(warnings[0]);
+        } finally {
+          reader.close();
+        }
+      } finally {
+        process.off('warning', onWarning);
+      }
+    }
+  } finally {
+    fs.watchFile = originalWatchFile;
+    fs.unwatchFile = originalUnwatchFile;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

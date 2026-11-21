@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const net = require('node:net');
 const { join } = require('node:path');
+const util = require('node:util');
 
 const platformTriples = {
   linux: {
@@ -556,6 +557,8 @@ class Reader {
   async _reloadWatchedFile(filepath, mode, hook) {
     const isStale = () => this.closed || this._watchFilepath !== filepath;
 
+    let reloaded = false;
+    let replacement;
     try {
       if (!(await waitForFile(filepath, isStale))) {
         if (!isStale()) {
@@ -569,7 +572,7 @@ class Reader {
         return;
       }
 
-      const replacement = await native.openReaderAsync(
+      replacement = await native.openReaderAsync(
         filepath,
         mode,
         this._cacheCapacity
@@ -579,11 +582,26 @@ class Reader {
         return;
       }
       this._replaceNativeReader(replacement);
-      if (!isStale() && hook) {
-        hook();
-      }
+      replacement = null;
+      reloaded = true;
     } catch (error) {
-      this._lastReloadError = error;
+      if (replacement && this._reader !== replacement) {
+        replacement.close();
+      }
+      if (!isStale()) {
+        this._lastReloadError = error;
+      }
+    }
+
+    if (reloaded && !isStale() && hook) {
+      try {
+        const result = hook();
+        if (result && typeof result.then === 'function') {
+          Promise.resolve(result).catch(emitHookWarning);
+        }
+      } catch (error) {
+        emitHookWarning(error);
+      }
     }
   }
 
@@ -693,6 +711,14 @@ function init() {
 
 function openSync() {
   throw new Error(legacyErrorMessage);
+}
+
+function emitHookWarning(error) {
+  if (error instanceof Error || typeof error === 'string') {
+    process.emitWarning(error);
+  } else {
+    process.emitWarning(new Error(util.inspect(error), { cause: error }));
+  }
 }
 
 function validate(ipAddress) {
