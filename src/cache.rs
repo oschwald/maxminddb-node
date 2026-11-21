@@ -3,9 +3,9 @@ use napi::{
     bindgen_prelude::{Env, JsObjectValue, Object, Unknown},
     Result, UnknownRef, ValueType,
 };
+use rustc_hash::{FxBuildHasher, FxHashSet};
 use std::{
     borrow::Borrow,
-    collections::HashSet,
     ffi::{c_char, CString},
     hash::{Hash, Hasher},
     num::NonZeroUsize,
@@ -26,8 +26,8 @@ const MAX_PROPERTY_NAME_KEY_BYTES: usize = 64;
 const SLRU_MAX_CAPACITY: usize = 10_000;
 
 pub(crate) struct RecordCache {
-    probationary: LruCache<usize, UnknownRef>,
-    protected: Option<LruCache<usize, UnknownRef>>,
+    probationary: LruCache<usize, UnknownRef, FxBuildHasher>,
+    protected: Option<LruCache<usize, UnknownRef, FxBuildHasher>>,
     capacity: NonZeroUsize,
     pub(crate) hits: u64,
     pub(crate) misses: u64,
@@ -94,13 +94,13 @@ impl Hash for CachedCString {
 }
 
 pub(crate) struct PropertyNameCache {
-    values: HashSet<CachedCString>,
+    values: FxHashSet<CachedCString>,
 }
 
 impl PropertyNameCache {
     pub(crate) fn new() -> Self {
         Self {
-            values: HashSet::new(),
+            values: FxHashSet::default(),
         }
     }
 
@@ -140,8 +140,8 @@ impl RecordCache {
         )
         .unwrap();
         Self {
-            probationary: LruCache::new(probationary_capacity),
-            protected: protected_capacity.map(LruCache::new),
+            probationary: LruCache::with_hasher(probationary_capacity, FxBuildHasher),
+            protected: protected_capacity.map(|cap| LruCache::with_hasher(cap, FxBuildHasher)),
             capacity,
             hits: 0,
             misses: 0,
