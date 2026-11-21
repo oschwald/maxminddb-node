@@ -5,6 +5,7 @@ const test = require('node:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 const maxmind = require('..');
 const pkg = require('../package.json');
@@ -975,4 +976,25 @@ test('supports Symbol.dispose on Reader, PathLookup, and NetworkIterator', async
 
   reader[Symbol.dispose]();
   assert.equal(reader.closed, true);
+});
+
+test('exposes named exports for ESM consumers', async () => {
+  const esm = await import(pathToFileURL(path.join(__dirname, '..', 'index.js')).href);
+
+  for (const name of [
+    'nativeVersion',
+    'NetworkIterator',
+    'PathLookup',
+    'Reader',
+    'init',
+    'open',
+    'openSync',
+    'validate',
+    'MODE_AUTO',
+    'MODE_MMAP',
+    'MODE_MEMORY',
+    'MODE_BUFFER',
+  ]) {
+    assert.strictEqual(esm[name], maxmind[name], `missing ESM named export: ${name}`);
+  }
 });

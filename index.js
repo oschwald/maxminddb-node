@@ -85,6 +85,7 @@ function loadNativeBinding() {
 }
 
 const native = loadNativeBinding();
+const nativeVersion = native.nativeVersion;
 const pathFinalizer = new FinalizationRegistry(({ nativeReader, pathId }) => {
   try {
     nativeReader.releasePath(pathId);
@@ -700,7 +701,7 @@ function validate(ipAddress) {
 }
 
 module.exports = {
-  nativeVersion: native.nativeVersion,
+  nativeVersion,
   NetworkIterator,
   PathLookup,
   Reader,
