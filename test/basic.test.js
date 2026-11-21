@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const maxmind = require('..');
+const pkg = require('../package.json');
 
 const dataDir = path.join(
   __dirname,
@@ -14,7 +15,7 @@ const dataDir = path.join(
 );
 
 test('loads native binding', () => {
-  assert.equal(maxmind.nativeVersion(), '0.4.0');
+  assert.equal(maxmind.nativeVersion(), pkg.version);
   assert.equal(maxmind.NativeReader, undefined);
   assert.equal(maxmind.NativeNetworkCursor, undefined);
   assert.equal(maxmind.openReader, undefined);

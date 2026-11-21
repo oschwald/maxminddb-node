@@ -40,14 +40,14 @@ fi
 
 cargo_version="$(perl -ne 'if (/^version = "([^"]+)"/) { print $1; exit }' Cargo.toml)"
 if [[ "$cargo_version" != "$version" ]]; then
-    perl -pi -e "s/(?<=^version = \").+?(?=\")/$version/gsm" Cargo.toml
-    perl -pi -e "s/(?<=maxmind\.nativeVersion\(\), ').+?(?=')/$version/gsm" test/basic.test.js
+    perl -0777 -pi -e "s/(?<=^version = \").+?(?=\")/$version/m" Cargo.toml
 fi
 
 echo $"Test results:"
 npm ci
 cargo fmt -- --check
 cargo check
+cargo test --lib
 cargo clippy --all-targets -- -D warnings
 npm run build
 npm test
@@ -69,7 +69,7 @@ if [ "$should_push" != "y" ]; then
 fi
 
 if [ -n "$(git status --porcelain)" ]; then
-    git commit -m "Update for $tag" package.json package-lock.json Cargo.toml Cargo.lock test/basic.test.js
+    git commit -m "Update for $tag" package.json package-lock.json Cargo.toml Cargo.lock
 fi
 
 git push

@@ -20,6 +20,9 @@ napi-derive = "3.6.5"
 self_cell = "1.3.0"
 serde = "1.0.229"
 
+[dev-dependencies]
+napi = { version = "3.12.4", default-features = false, features = ["napi8", "noop"] }
+
 [build-dependencies]
 napi-build = "2.4.2"
 
