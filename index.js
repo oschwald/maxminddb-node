@@ -216,6 +216,10 @@ class PathLookup {
     }
   }
 
+  [Symbol.dispose]() {
+    this.close();
+  }
+
   _ensureCompiled() {
     if (this._closed) {
       throw new Error('Path lookup is closed.');
@@ -350,6 +354,10 @@ class NetworkIterator {
       this._page = [];
       this._index = 0;
     }
+  }
+
+  [Symbol.dispose]() {
+    this.close();
   }
 }
 
@@ -511,6 +519,10 @@ class Reader {
     }
     this._watchReloadPending = false;
     this._reader.close();
+  }
+
+  [Symbol.dispose]() {
+    this.close();
   }
 
   _queueWatchedReload(filepath, mode, hook) {

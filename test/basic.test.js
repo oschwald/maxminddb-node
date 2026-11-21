@@ -961,3 +961,18 @@ test('preserves PathLookup handle state if recompilation fails after reload', as
     reader.close();
   }
 });
+
+test('supports Symbol.dispose on Reader, PathLookup, and NetworkIterator', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const lookup = reader.path(['country', 'iso_code']);
+  const iterator = reader.within('81.2.69.0/24', { pageSize: 1 });
+
+  lookup[Symbol.dispose]();
+  assert.throws(() => lookup.get('81.2.69.142'), /Path lookup is closed/);
+
+  iterator[Symbol.dispose]();
+  assert.deepEqual(iterator.next(), { done: true, value: undefined });
+
+  reader[Symbol.dispose]();
+  assert.equal(reader.closed, true);
+});
