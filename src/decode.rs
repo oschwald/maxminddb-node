@@ -12,8 +12,12 @@ use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
     ffi::c_char,
-    fmt, ptr,
+    fmt,
+    marker::PhantomData,
+    ptr,
 };
+
+const MAX_PREALLOCATED_MAP_DESCRIPTORS: usize = 1024;
 
 #[derive(Clone, Copy)]
 struct JsDecodeContext {
@@ -37,13 +41,17 @@ impl RawJsValue {
     }
 }
 
-struct JsDecodeEnvGuard {
+pub(crate) struct JsDecodeEnvGuard<'a> {
     previous_context: JsDecodeContext,
     previous_error: Option<Error>,
+    _property_names: PhantomData<&'a mut PropertyNameCache>,
 }
 
-impl JsDecodeEnvGuard {
-    fn enter(env: sys::napi_env, property_name_cache: &mut PropertyNameCache) -> Self {
+impl<'a> JsDecodeEnvGuard<'a> {
+    pub(crate) fn enter(
+        env: sys::napi_env,
+        property_name_cache: &'a mut PropertyNameCache,
+    ) -> Self {
         let previous_context = JS_DECODE_CONTEXT.with(|cell| {
             cell.replace(JsDecodeContext {
                 env,
@@ -54,11 +62,12 @@ impl JsDecodeEnvGuard {
         Self {
             previous_context,
             previous_error,
+            _property_names: PhantomData,
         }
     }
 }
 
-impl Drop for JsDecodeEnvGuard {
+impl Drop for JsDecodeEnvGuard<'_> {
     fn drop(&mut self) {
         JS_DECODE_CONTEXT.with(|cell| cell.set(self.previous_context));
         JS_DECODE_NAPI_ERROR.with(|cell| {
@@ -262,7 +271,11 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
     {
         let context = self.0;
         let object = napi_result_to_de(raw_object(context.env))?;
-        let mut descriptors = Vec::with_capacity(map.size_hint().unwrap_or(0));
+        let capacity = map
+            .size_hint()
+            .unwrap_or(0)
+            .min(MAX_PREALLOCATED_MAP_DESCRIPTORS);
+        let mut descriptors = Vec::with_capacity(capacity);
         while let Some(key) = map.next_key_seed(RawJsPropertyNameSeed)? {
             let value = map.next_value_seed(RawJsValueSeed(context))?;
             descriptors.push(napi_result_to_de(raw_property_descriptor(
@@ -271,7 +284,7 @@ impl<'de> Visitor<'de> for RawJsValueVisitor {
                 value,
             ))?);
         }
-        napi_result_to_de(raw_define_properties(context.env, object, descriptors))
+        napi_result_to_de(raw_define_properties(context.env, object, &descriptors))
     }
 }
 
@@ -389,61 +402,56 @@ pub(crate) fn lookup_result_record_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
     cache: &mut Option<RecordCache>,
-    property_names: &mut PropertyNameCache,
+    guard: &JsDecodeEnvGuard<'_>,
 ) -> Result<Unknown<'env>> {
     let Some(offset) = result.offset() else {
         return Null.into_unknown(env);
     };
 
-    {
-        let Some(record_cache) = cache.as_mut() else {
-            return lookup_result_record_uncached_to_js(env, result, property_names);
-        };
-
+    if let Some(record_cache) = cache.as_mut() {
         if let Some(value) = record_cache.get(env, offset)? {
             return Ok(value);
         }
     }
 
-    let value = lookup_result_record_uncached_to_js(env, result, property_names)?;
+    let value = lookup_result_record_uncached_to_js(env, result, guard)?;
     if let Some(record_cache) = cache.as_mut() {
         record_cache.put(env, offset, &value)?;
     }
     Ok(value)
 }
 
-pub(crate) fn lookup_result_path_to_js<'env, S: AsRef<[u8]>>(
-    env: &'env Env,
-    result: &maxminddb::LookupResult<'_, S>,
-    path: &[maxminddb::PathElement<'_>],
-    property_names: &mut PropertyNameCache,
-) -> Result<Unknown<'env>> {
-    let _guard = JsDecodeEnvGuard::enter(env.raw(), property_names);
-    lookup_result_path_with_context_to_js(env, result, path)
-}
-
 pub(crate) fn lookup_result_paths_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
     paths: &[PathElements<'_>],
-    property_names: &mut PropertyNameCache,
+    guard: &JsDecodeEnvGuard<'_>,
 ) -> Result<Unknown<'env>> {
     let length = u32::try_from(paths.len()).map_err(|_| napi_error("too many paths"))?;
     let mut values = env.create_array(length)?;
-    let _guard = JsDecodeEnvGuard::enter(env.raw(), property_names);
+    if result.offset().is_none() {
+        if length > 0 {
+            let null = raw_null(env.raw())?.into_unknown(env);
+            for index in 0..length {
+                values.set(index, null)?;
+            }
+        }
+        return values.into_unknown(env);
+    }
     for (index, path) in paths.iter().enumerate() {
         values.set(
             index as u32,
-            lookup_result_path_with_context_to_js(env, result, path)?,
+            lookup_result_path_to_js(env, result, path, guard)?,
         )?;
     }
     values.into_unknown(env)
 }
 
-fn lookup_result_path_with_context_to_js<'env, S: AsRef<[u8]>>(
+pub(crate) fn lookup_result_path_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
     path: &[maxminddb::PathElement<'_>],
+    _guard: &JsDecodeEnvGuard<'_>,
 ) -> Result<Unknown<'env>> {
     match result.decode_path::<RawJsValue>(path) {
         Ok(Some(value)) => Ok(value.into_unknown(env)),
@@ -455,9 +463,8 @@ fn lookup_result_path_with_context_to_js<'env, S: AsRef<[u8]>>(
 pub(crate) fn lookup_result_record_uncached_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     result: &maxminddb::LookupResult<'_, S>,
-    property_names: &mut PropertyNameCache,
+    _guard: &JsDecodeEnvGuard<'_>,
 ) -> Result<Unknown<'env>> {
-    let _guard = JsDecodeEnvGuard::enter(env.raw(), property_names);
     match result.decode::<RawJsValue>() {
         Ok(Some(value)) => Ok(value.into_unknown(env)),
         Ok(None) => Null.into_unknown(env),
@@ -697,7 +704,7 @@ fn raw_property_descriptor(
 fn raw_define_properties(
     env: sys::napi_env,
     object: RawJsValue,
-    descriptors: Vec<sys::napi_property_descriptor>,
+    descriptors: &[sys::napi_property_descriptor],
 ) -> Result<RawJsValue> {
     if !descriptors.is_empty() {
         check_status!(

@@ -9,7 +9,10 @@ mod paths;
 
 use crate::{
     cache::{cache_stats_to_js, PropertyNameCache, RecordCache},
-    decode::{lookup_result_path_to_js, lookup_result_paths_to_js, lookup_result_record_to_js},
+    decode::{
+        lookup_result_path_to_js, lookup_result_paths_to_js, lookup_result_record_to_js,
+        JsDecodeEnvGuard,
+    },
     errors::{invalid_arg, lookup_error, napi_error, open_error},
     ip::{parse_js_ip, parse_network, prefix_len_for_lookup},
     metadata::metadata_to_js,
@@ -95,11 +98,11 @@ impl ReaderSource {
         env: &'env Env,
         ip: IpAddr,
         cache: &mut Option<RecordCache>,
-        property_names: &mut PropertyNameCache,
+        guard: &JsDecodeEnvGuard<'_>,
     ) -> Result<Unknown<'env>> {
         dispatch_reader!(self, reader => {
             let result = reader.lookup(ip).map_err(lookup_error)?;
-            lookup_result_record_to_js(env, &result, cache, property_names)
+            lookup_result_record_to_js(env, &result, cache, guard)
         })
     }
 
@@ -108,14 +111,14 @@ impl ReaderSource {
         env: &'env Env,
         ip: IpAddr,
         cache: &mut Option<RecordCache>,
-        property_names: &mut PropertyNameCache,
+        guard: &JsDecodeEnvGuard<'_>,
     ) -> Result<(Unknown<'env>, usize)> {
         dispatch_reader!(self, reader => {
             let result = reader.lookup(ip).map_err(lookup_error)?;
             let network = result.network().map_err(lookup_error)?;
             let prefix = prefix_len_for_lookup(ip, network);
             Ok((
-                lookup_result_record_to_js(env, &result, cache, property_names)?,
+                lookup_result_record_to_js(env, &result, cache, guard)?,
                 prefix,
             ))
         })
@@ -126,11 +129,11 @@ impl ReaderSource {
         env: &'env Env,
         ip: IpAddr,
         path: &[maxminddb::PathElement<'_>],
-        property_names: &mut PropertyNameCache,
+        guard: &JsDecodeEnvGuard<'_>,
     ) -> Result<Unknown<'env>> {
         dispatch_reader!(self, reader => {
             let result = reader.lookup(ip).map_err(lookup_error)?;
-            lookup_result_path_to_js(env, &result, path, property_names)
+            lookup_result_path_to_js(env, &result, path, guard)
         })
     }
 
@@ -139,11 +142,11 @@ impl ReaderSource {
         env: &'env Env,
         ip: IpAddr,
         paths: &[PathElements<'_>],
-        property_names: &mut PropertyNameCache,
+        guard: &JsDecodeEnvGuard<'_>,
     ) -> Result<Unknown<'env>> {
         dispatch_reader!(self, reader => {
             let result = reader.lookup(ip).map_err(lookup_error)?;
-            lookup_result_paths_to_js(env, &result, paths, property_names)
+            lookup_result_paths_to_js(env, &result, paths, guard)
         })
     }
 
@@ -285,7 +288,8 @@ impl NativeReader {
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        reader.lookup_record_to_js(env, ip, &mut state.cache, &mut state.property_names)
+        let guard = JsDecodeEnvGuard::enter(env.raw(), &mut state.property_names);
+        reader.lookup_record_to_js(env, ip, &mut state.cache, &guard)
     }
 
     #[napi(js_name = "bindGet")]
@@ -313,7 +317,8 @@ impl NativeReader {
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        reader.lookup_path_to_js(env, ip, &path_elements, &mut state.property_names)
+        let guard = JsDecodeEnvGuard::enter(env.raw(), &mut state.property_names);
+        reader.lookup_path_to_js(env, ip, &path_elements, &guard)
     }
 
     #[napi(js_name = "getPaths")]
@@ -332,7 +337,8 @@ impl NativeReader {
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        reader.lookup_paths_to_js(env, ip, &path_elements, &mut state.property_names)
+        let guard = JsDecodeEnvGuard::enter(env.raw(), &mut state.property_names);
+        reader.lookup_paths_to_js(env, ip, &path_elements, &guard)
     }
 
     #[napi(js_name = "compilePath")]
@@ -373,7 +379,8 @@ impl NativeReader {
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         let owned_path = compiled_path(&state.paths, path_id)?;
         let path_elements = path_elements_from_owned(owned_path);
-        reader.lookup_path_to_js(env, ip, &path_elements, &mut state.property_names)
+        let guard = JsDecodeEnvGuard::enter(env.raw(), &mut state.property_names);
+        reader.lookup_path_to_js(env, ip, &path_elements, &guard)
     }
 
     #[napi(js_name = "getWithPrefixLength")]
@@ -389,12 +396,9 @@ impl NativeReader {
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
-        let (js_value, prefix_len) = reader.lookup_record_with_prefix_to_js(
-            env,
-            ip,
-            &mut state.cache,
-            &mut state.property_names,
-        )?;
+        let guard = JsDecodeEnvGuard::enter(env.raw(), &mut state.property_names);
+        let (js_value, prefix_len) =
+            reader.lookup_record_with_prefix_to_js(env, ip, &mut state.cache, &guard)?;
         let js_prefix = (prefix_len as u32).into_unknown(env)?;
         Array::from_vec(env, vec![js_value, js_prefix])?.into_unknown(env)
     }
@@ -408,8 +412,9 @@ impl NativeReader {
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        let guard = JsDecodeEnvGuard::enter(env.raw(), &mut state.property_names);
         collect_lookup_results(env, parsed_ips, |ip| {
-            reader.lookup_record_to_js(env, ip, &mut state.cache, &mut state.property_names)
+            reader.lookup_record_to_js(env, ip, &mut state.cache, &guard)
         })
     }
 
@@ -429,8 +434,9 @@ impl NativeReader {
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
         let owned_path = compiled_path(&state.paths, path_id)?;
         let path_elements = path_elements_from_owned(owned_path);
+        let guard = JsDecodeEnvGuard::enter(env.raw(), &mut state.property_names);
         collect_lookup_results(env, parsed_ips, |ip| {
-            reader.lookup_path_to_js(env, ip, &path_elements, &mut state.property_names)
+            reader.lookup_path_to_js(env, ip, &path_elements, &guard)
         })
     }
 
@@ -450,8 +456,9 @@ impl NativeReader {
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        let guard = JsDecodeEnvGuard::enter(env.raw(), &mut state.property_names);
         collect_lookup_results(env, parsed_ips, |ip| {
-            reader.lookup_path_to_js(env, ip, &path_elements, &mut state.property_names)
+            reader.lookup_path_to_js(env, ip, &path_elements, &guard)
         })
     }
 
@@ -471,8 +478,9 @@ impl NativeReader {
             .reader
             .as_ref()
             .ok_or_else(|| invalid_arg(ERR_CLOSED_DB))?;
+        let guard = JsDecodeEnvGuard::enter(env.raw(), &mut state.property_names);
         collect_lookup_results(env, parsed_ips, |ip| {
-            reader.lookup_paths_to_js(env, ip, &path_elements, &mut state.property_names)
+            reader.lookup_paths_to_js(env, ip, &path_elements, &guard)
         })
     }
 

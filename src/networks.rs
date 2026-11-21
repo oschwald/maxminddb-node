@@ -1,6 +1,9 @@
 use crate::{
     cache::PropertyNameCache,
-    decode::{lookup_result_path_to_js, lookup_result_record_uncached_to_js, string_bytes_to_js},
+    decode::{
+        lookup_result_path_to_js, lookup_result_record_uncached_to_js, string_bytes_to_js,
+        JsDecodeEnvGuard,
+    },
     errors::{lookup_error, napi_error},
 };
 use arrayvec::ArrayString;
@@ -8,12 +11,11 @@ use maxminddb::{
     LookupResult, MaxMindDbError, Mmap, Reader as MaxMindReader, Within, WithinOptions,
 };
 use napi::{
-    bindgen_prelude::{Array, Env, ToNapiValue, Unknown},
+    bindgen_prelude::{Env, ToNapiValue, Unknown},
     Result,
 };
-use std::{collections::HashMap, fmt::Write};
-
-const MAX_INITIAL_NETWORK_PAGE_CAPACITY: usize = 1024;
+use rustc_hash::FxHashMap;
+use std::fmt::Write;
 
 pub(crate) enum NetworkIter<'de> {
     Mmap(Within<'de, Mmap>),
@@ -49,15 +51,13 @@ impl<'de> NetworkIter<'de> {
     fn next_record_to_js<'env>(
         &mut self,
         env: &'env Env,
-        property_names: &mut PropertyNameCache,
-        records_by_offset: &mut Option<HashMap<usize, Unknown<'env>>>,
+        guard: &JsDecodeEnvGuard<'_>,
+        records_by_offset: &mut Option<FxHashMap<usize, Unknown<'env>>>,
         path: Option<&[maxminddb::PathElement<'_>]>,
     ) -> Result<Option<Unknown<'env>>> {
         dispatch_network_iter!(self, iter => {
             iter.next()
-                .map(|result| {
-                    network_lookup_to_js(env, result, property_names, records_by_offset, path)
-                })
+                .map(|result| network_lookup_to_js(env, result, guard, records_by_offset, path))
                 .transpose()
         })
     }
@@ -77,8 +77,8 @@ fn within_iter<'de, S: AsRef<[u8]>>(
 fn network_lookup_to_js<'env, 'de, S: AsRef<[u8]>>(
     env: &'env Env,
     result: std::result::Result<LookupResult<'de, S>, MaxMindDbError>,
-    property_names: &mut PropertyNameCache,
-    records_by_offset: &mut Option<HashMap<usize, Unknown<'env>>>,
+    guard: &JsDecodeEnvGuard<'_>,
+    records_by_offset: &mut Option<FxHashMap<usize, Unknown<'env>>>,
     path: Option<&[maxminddb::PathElement<'_>]>,
 ) -> Result<Unknown<'env>> {
     let lookup = result.map_err(lookup_error)?;
@@ -93,12 +93,12 @@ fn network_lookup_to_js<'env, 'de, S: AsRef<[u8]>>(
         if let Some(record) = records_by_offset.get(&offset) {
             *record
         } else {
-            let record = network_record_to_js(env, &lookup, property_names, path)?;
+            let record = network_record_to_js(env, &lookup, guard, path)?;
             records_by_offset.insert(offset, record);
             record
         }
     } else {
-        network_record_to_js(env, &lookup, property_names, path)?
+        network_record_to_js(env, &lookup, guard, path)?
     };
     let mut pair = env.create_array(2)?;
     pair.set(0, network)?;
@@ -114,30 +114,34 @@ pub(crate) fn collect_next_networks_page_to_js<'env, 'de>(
     cache_records: bool,
     path: Option<&[maxminddb::PathElement<'_>]>,
 ) -> Result<(Unknown<'env>, bool)> {
-    let mut records = Vec::with_capacity(limit.min(MAX_INITIAL_NETWORK_PAGE_CAPACITY));
-    let mut records_by_offset = cache_records.then(HashMap::new);
+    let mut records = env.create_array(0)?;
+    let mut records_by_offset = cache_records.then(FxHashMap::default);
+    let guard = JsDecodeEnvGuard::enter(env.raw(), property_names);
+    let mut count: u32 = 0;
     for _ in 0..limit {
-        let Some(record) =
-            iter.next_record_to_js(env, property_names, &mut records_by_offset, path)?
+        let Some(record) = iter.next_record_to_js(env, &guard, &mut records_by_offset, path)?
         else {
             break;
         };
-        records.push(record);
+        records.set(count, record)?;
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| napi_error("page size exceeds u32 range"))?;
     }
-    let is_empty = records.is_empty();
-    Ok((Array::from_vec(env, records)?.into_unknown(env)?, is_empty))
+    let is_empty = count == 0;
+    Ok((records.into_unknown(env)?, is_empty))
 }
 
 fn network_record_to_js<'env, S: AsRef<[u8]>>(
     env: &'env Env,
     lookup: &LookupResult<'_, S>,
-    property_names: &mut PropertyNameCache,
+    guard: &JsDecodeEnvGuard<'_>,
     path: Option<&[maxminddb::PathElement<'_>]>,
 ) -> Result<Unknown<'env>> {
     if let Some(path) = path {
-        lookup_result_path_to_js(env, lookup, path, property_names)
+        lookup_result_path_to_js(env, lookup, path, guard)
     } else {
-        lookup_result_record_uncached_to_js(env, lookup, property_names)
+        lookup_result_record_uncached_to_js(env, lookup, guard)
     }
 }
 
