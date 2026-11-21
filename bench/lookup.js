@@ -42,7 +42,7 @@ function parseArgs(argv) {
     if (arg === '--compare-node-maxmind') {
       options.compareNodeMaxmind = true;
     } else if (arg === '--baseline') {
-      options.baseline = argv[++i];
+      options.baseline = parseRequiredValue(argv[++i], '--baseline', 'a path');
     } else if (arg === '--count') {
       options.count = parsePositiveInteger(argv[++i], '--count');
     } else if (arg === '--json') {
@@ -63,11 +63,15 @@ function parseArgs(argv) {
     } else if (arg === '--no-network-bench') {
       options.networkCidr = null;
     } else if (arg === '--save-baseline') {
-      options.saveBaseline = argv[++i];
+      options.saveBaseline = parseRequiredValue(
+        argv[++i],
+        '--save-baseline',
+        'a path'
+      );
     } else if (arg === '--warmup') {
       options.warmup = parsePositiveInteger(argv[++i], '--warmup');
     } else if (arg === '--db') {
-      options.dbs.push(argv[++i]);
+      options.dbs.push(parseRequiredValue(argv[++i], '--db', 'a database path'));
     } else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -224,7 +228,10 @@ function benchMany(
   options,
   isFound
 ) {
-  warmup(reader, ips, warmupCount, (r, ip) => r.get(ip));
+  const warmupIps = ips.slice(0, Math.min(warmupCount, ips.length));
+  if (warmupIps.length > 0) {
+    lookupMany(reader, warmupIps);
+  }
   gc();
 
   const start = process.hrtime.bigint();
