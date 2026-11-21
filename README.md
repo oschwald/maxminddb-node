@@ -68,7 +68,9 @@ paths and do not populate the full-record cache.
 When `watchForUpdates` is enabled, file-change reloads run serially. A failed
 watched reload leaves the existing reader active, stores the failure on
 `reader.lastReloadError`, and skips `watchForUpdatesHook`. The next successful
-reload clears `lastReloadError` and calls the hook. Close watched readers with
+reload clears `lastReloadError` and calls the hook. If the hook throws or
+returns a rejected promise, the error is reported with `process.emitWarning()`
+and does not change `lastReloadError`. Close watched readers with
 `reader.close()` to remove the file watcher.
 
 Call `await reader.reloadAsync()` to open and validate a replacement database
