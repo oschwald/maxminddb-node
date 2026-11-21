@@ -592,6 +592,7 @@ impl NativeReader {
 impl NativeReaderState {
     fn replace_reader(&mut self, env: &Env, new_reader: ReaderSource) -> Result<()> {
         self.clear_record_cache(env)?;
+        self.clear_property_names();
         self.ip_version = new_reader.metadata().ip_version;
         self.reader = Some(Arc::new(new_reader));
         Ok(())
