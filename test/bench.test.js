@@ -19,6 +19,13 @@ function runBenchmark(args) {
   });
 }
 
+test('benchmark rejects missing --db option value', () => {
+  const result = runBenchmark(['--db']);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--db requires a database path/);
+});
+
 test('benchmark rejects missing network CIDR option value', () => {
   const result = runBenchmark(['--network-cidr']);
 

@@ -24,20 +24,24 @@ jobs:
             node-version: 22.x
           - os: ubuntu-latest
             node-version: 24.x
+          - os: ubuntu-22.04-arm
+            node-version: 24.x
           - os: macos-15-intel
+            node-version: 24.x
+          - os: macos-15
             node-version: 24.x
           - os: windows-2025
             node-version: 24.x
 
     defaults:
       run:
-        working-directory: maxmind-rs
+        working-directory: maxminddb-node
 
     steps:
-      - name: Checkout maxmind-rs
+      - name: Checkout maxminddb-node
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: maxmind-rs
+          path: maxminddb-node
           persist-credentials: false
 
       - name: Checkout MaxMind DB Rust test data
@@ -53,7 +57,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-          cache-dependency-path: maxmind-rs/package-lock.json
+          cache-dependency-path: maxminddb-node/package-lock.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
@@ -69,6 +73,9 @@ jobs:
 
       - name: Check Rust
         run: cargo check
+
+      - name: Test Rust
+        run: cargo test --lib
 
       - name: Lint Rust
         run: cargo clippy --all-targets -- -D warnings

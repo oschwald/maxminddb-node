@@ -3,15 +3,31 @@ use napi::{
     bindgen_prelude::{Env, JsObjectValue, Object, Unknown},
     Result, UnknownRef, ValueType,
 };
+use rustc_hash::{FxBuildHasher, FxHashSet};
 use std::{
-    collections::HashMap,
+    borrow::Borrow,
     ffi::{c_char, CString},
+    hash::{Hash, Hasher},
     num::NonZeroUsize,
+    ptr::NonNull,
+    slice,
 };
 
+// Cap cached NUL-terminated map keys by both entry count and key length so
+// databases with high-cardinality or oversized dynamic keys cannot grow the
+// cache without bound (worst case 4,096 * 64 bytes = 256 KiB per reader/cursor).
+// Keys beyond these bounds fall back to allocating a JS string directly.
+const MAX_PROPERTY_NAME_CACHE_ENTRIES: usize = 4_096;
+const MAX_PROPERTY_NAME_KEY_BYTES: usize = 64;
+
+// Use a two-segment SLRU (20% protected, 80% probationary) for smaller caches
+// (including the default 10,000-entry cache) to resist scan pollution. Larger
+// caches already absorb working-set churn and avoid the extra segment lookup.
+const SLRU_MAX_CAPACITY: usize = 10_000;
+
 pub(crate) struct RecordCache {
-    probationary: LruCache<usize, UnknownRef>,
-    protected: Option<LruCache<usize, UnknownRef>>,
+    probationary: LruCache<usize, UnknownRef, FxBuildHasher>,
+    protected: Option<LruCache<usize, UnknownRef, FxBuildHasher>>,
     capacity: NonZeroUsize,
     pub(crate) hits: u64,
     pub(crate) misses: u64,
@@ -19,25 +35,91 @@ pub(crate) struct RecordCache {
     pub(crate) evictions: u64,
 }
 
+// Owns a NUL-terminated byte buffer detached from `Box`/`CString` via
+// `CString::into_raw`. Moving this handle (e.g. during HashSet insertion or
+// rehashing) never retags or invalidates pointers previously returned by
+// `as_ptr()` while the entry remains in the cache.
+struct CachedCString {
+    ptr: NonNull<c_char>,
+    len: usize,
+}
+
+impl CachedCString {
+    fn new(bytes: &[u8]) -> Option<Self> {
+        let cstring = CString::new(bytes).ok()?;
+        let len = cstring.as_bytes().len();
+        let ptr = NonNull::new(cstring.into_raw())?;
+        Some(Self { ptr, len })
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: `self.ptr` points to `self.len` initialized bytes followed by
+        // a NUL byte from `CString::into_raw` and remains immutable until Drop.
+        unsafe { slice::from_raw_parts(self.ptr.as_ptr().cast::<u8>(), self.len) }
+    }
+
+    fn as_ptr(&self) -> *const c_char {
+        self.ptr.as_ptr()
+    }
+}
+
+impl Drop for CachedCString {
+    fn drop(&mut self) {
+        // SAFETY: `self.ptr` was created by `CString::into_raw` and is
+        // reclaimed exactly once here.
+        unsafe {
+            drop(CString::from_raw(self.ptr.as_ptr()));
+        }
+    }
+}
+
+impl Borrow<[u8]> for CachedCString {
+    fn borrow(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl PartialEq for CachedCString {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl Eq for CachedCString {}
+
+impl Hash for CachedCString {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_bytes().hash(state);
+    }
+}
+
 pub(crate) struct PropertyNameCache {
-    values: HashMap<Vec<u8>, CString>,
+    values: FxHashSet<CachedCString>,
 }
 
 impl PropertyNameCache {
     pub(crate) fn new() -> Self {
         Self {
-            values: HashMap::new(),
+            values: FxHashSet::default(),
         }
     }
 
     pub(crate) fn get(&mut self, name: &[u8]) -> Option<*const c_char> {
-        if let Some(reference) = self.values.get(name) {
-            return Some(reference.as_ptr());
+        if name.len() > MAX_PROPERTY_NAME_KEY_BYTES {
+            return None;
         }
 
-        let reference = CString::new(name).ok()?;
-        let pointer = reference.as_ptr();
-        self.values.insert(name.to_vec(), reference);
+        if let Some(cached) = self.values.get(name) {
+            return Some(cached.as_ptr());
+        }
+
+        if self.values.len() >= MAX_PROPERTY_NAME_CACHE_ENTRIES {
+            return None;
+        }
+
+        let cached = CachedCString::new(name)?;
+        let pointer = cached.as_ptr();
+        self.values.insert(cached);
         Some(pointer)
     }
 
@@ -48,7 +130,7 @@ impl PropertyNameCache {
 
 impl RecordCache {
     pub(crate) fn new(capacity: NonZeroUsize) -> Self {
-        let protected_capacity = if capacity.get() <= 10_000 {
+        let protected_capacity = if capacity.get() <= SLRU_MAX_CAPACITY {
             NonZeroUsize::new(capacity.get() / 5)
         } else {
             None
@@ -58,8 +140,8 @@ impl RecordCache {
         )
         .unwrap();
         Self {
-            probationary: LruCache::new(probationary_capacity),
-            protected: protected_capacity.map(LruCache::new),
+            probationary: LruCache::with_hasher(probationary_capacity, FxBuildHasher),
+            protected: protected_capacity.map(|cap| LruCache::with_hasher(cap, FxBuildHasher)),
             capacity,
             hits: 0,
             misses: 0,
@@ -79,12 +161,14 @@ impl RecordCache {
                 return value.get_value(env).map(Some);
             }
 
-            if let Some(value) = self.probationary.pop(&offset) {
+            if let Some(value) = self.probationary.peek(&offset) {
                 let result = value.get_value(env)?;
-                if let Some((demoted_offset, demoted)) = protected.push(offset, value) {
-                    debug_assert_ne!(demoted_offset, offset);
-                    let evicted = self.probationary.push(demoted_offset, demoted);
-                    debug_assert!(evicted.is_none());
+                if let Some(value) = self.probationary.pop(&offset) {
+                    if let Some((demoted_offset, demoted)) = protected.push(offset, value) {
+                        debug_assert_ne!(demoted_offset, offset);
+                        let evicted = self.probationary.push(demoted_offset, demoted);
+                        debug_assert!(evicted.is_none());
+                    }
                 }
                 self.hits += 1;
                 return Ok(Some(result));
@@ -156,4 +240,47 @@ pub(crate) fn cache_stats_to_js<'env>(
     }
 
     Ok(object)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PropertyNameCache, MAX_PROPERTY_NAME_CACHE_ENTRIES, MAX_PROPERTY_NAME_KEY_BYTES};
+    use std::ffi::CStr;
+
+    #[test]
+    fn caches_property_names_with_stable_pointers_across_rehashes() {
+        let mut cache = PropertyNameCache::new();
+        let first_ptr = cache.get(b"country").expect("valid key should be cached");
+        assert_eq!(cache.get(b"country"), Some(first_ptr));
+
+        for index in 0..512 {
+            let key = format!("key_{index}");
+            let ptr = cache.get(key.as_bytes()).expect("key should fit in cache");
+            assert_eq!(unsafe { CStr::from_ptr(ptr) }.to_bytes(), key.as_bytes());
+        }
+
+        assert_eq!(cache.get(b"country"), Some(first_ptr));
+        assert_eq!(unsafe { CStr::from_ptr(first_ptr) }.to_bytes(), b"country");
+    }
+
+    #[test]
+    fn rejects_interior_nul_oversized_keys_and_enforces_capacity_bound() {
+        let mut cache = PropertyNameCache::new();
+        assert_eq!(cache.get(b"bad\0key"), None);
+        assert!(cache.get(&[b'a'; MAX_PROPERTY_NAME_KEY_BYTES]).is_some());
+        assert_eq!(cache.get(&[b'a'; MAX_PROPERTY_NAME_KEY_BYTES + 1]), None);
+        cache.clear();
+
+        for index in 0..MAX_PROPERTY_NAME_CACHE_ENTRIES {
+            let key = format!("k{index}");
+            assert!(cache.get(key.as_bytes()).is_some());
+        }
+
+        // Existing entries still hit, while new entries beyond the cap return None.
+        assert!(cache.get(b"k0").is_some());
+        assert_eq!(cache.get(b"overflow_key"), None);
+
+        cache.clear();
+        assert!(cache.get(b"overflow_key").is_some());
+    }
 }

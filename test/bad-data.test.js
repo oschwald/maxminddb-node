@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { Worker } = require('node:worker_threads');
 
 const maxmind = require('..');
 
@@ -294,3 +295,47 @@ test('overflowing extended data types raise a database error', () => {
     }
   }
 });
+
+test(
+  'deeply nested corrupt databases fail cleanly on small worker stacks in CI',
+  { skip: !process.env.CI },
+  async () => {
+    const indexPath = path.resolve(__dirname, '..');
+    for (const fixture of [
+      'libmaxminddb/libmaxminddb-deep-nesting.mmdb',
+      'libmaxminddb/libmaxminddb-deep-array-nesting.mmdb',
+    ]) {
+      const dbPath = path.join(badDataDir, fixture);
+      await new Promise((resolve, reject) => {
+        const worker = new Worker(
+          `
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const { workerData } = require('node:worker_threads');
+          const maxmind = require(workerData.indexPath);
+
+          const reader = new maxmind.Reader(fs.readFileSync(workerData.dbPath));
+          try {
+            assert.throws(() => reader.get('1.1.1.1'), workerData.badDataError);
+          } finally {
+            reader.close();
+          }
+          `,
+          {
+            eval: true,
+            workerData: { indexPath, dbPath, badDataError },
+            resourceLimits: { stackSizeMb: 0.5 },
+          }
+        );
+        worker.on('error', reject);
+        worker.on('exit', (code) => {
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(new Error(`${fixture} worker exited with code ${code}`));
+          }
+        });
+      });
+    }
+  }
+);

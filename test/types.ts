@@ -1,6 +1,7 @@
 import maxmind, {
   CityResponse,
   MODE_MMAP,
+  NetworkIterator,
   PathLookup,
   Reader,
   validate,
@@ -26,7 +27,11 @@ async function checkTypes() {
   const prefixLength: number = tuple[1];
   void prefixLength;
 
-  opened.getPath('8.8.8.8', ['subdivisions', 0, 'iso_code']);
+  const subdivisionIso: string | null = opened.getPath<string>(
+    '8.8.8.8',
+    ['subdivisions', 0, 'iso_code'],
+  );
+  void subdivisionIso;
   const projected = opened.getPaths<[string | null, string | null]>(
     '8.8.8.8',
     [['country', 'iso_code'], ['continent', 'code']],
@@ -38,7 +43,11 @@ async function checkTypes() {
   countryPath.close();
   void countryCode;
   opened.getMany(['8.8.8.8']);
-  opened.getManyPath(['8.8.8.8'], ['country', 'iso_code']);
+  const countryCodes: Array<string | null> = opened.getManyPath<string>(
+    ['8.8.8.8'],
+    ['country', 'iso_code'],
+  );
+  void countryCodes;
   const projectedRows = opened.getManyPaths<[string | null, string | null]>(
     ['8.8.8.8'],
     [['country', 'iso_code'], ['continent', 'code']],
@@ -48,7 +57,10 @@ async function checkTypes() {
   for (const [_network, record] of opened.within('8.8.8.0/24')) {
     record?.country?.iso_code;
   }
-  const networks = opened.networks({ pageSize: 100, skipEmptyValues: true });
+  const networks: NetworkIterator<CityResponse> = opened.networks({
+    pageSize: 100,
+    skipEmptyValues: true,
+  });
   const next = networks.next();
   next.value?.[1]?.country?.iso_code;
   const page = networks.nextPage(100);
@@ -59,6 +71,20 @@ async function checkTypes() {
   opened.networkPages({ pageSize: 100 }).next();
   opened.networksPath<string>(['country', 'iso_code']).next();
   opened.withinPath<string>('8.8.8.0/24', ['country', 'iso_code']).next();
+
+  const NetworkIteratorCtor: typeof NetworkIterator = maxmind.NetworkIterator;
+  void NetworkIteratorCtor;
+
+  interface CustomRecord {
+    readonly tenant: string;
+    readonly score: number;
+  }
+  const custom = await maxmind.open<CustomRecord>('/tmp/custom.mmdb', {
+    cache: {},
+  });
+  const tenant: string | undefined = custom.get('8.8.8.8')?.tenant;
+  void tenant;
+  custom[Symbol.dispose]();
 
   const fromBuffer = new Reader<CityResponse>(Buffer.alloc(0));
   fromBuffer.close();

@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const net = require('node:net');
 const { join } = require('node:path');
+const util = require('node:util');
 
 const platformTriples = {
   linux: {
@@ -15,9 +16,8 @@ const platformTriples = {
     riscv64: ['linux-riscv64-gnu'],
   },
   darwin: {
-    x64: ['darwin-x64'],
-    arm64: ['darwin-arm64'],
-    universal: ['darwin-universal'],
+    x64: ['darwin-x64', 'darwin-universal'],
+    arm64: ['darwin-arm64', 'darwin-universal'],
   },
   win32: {
     x64: ['win32-x64-msvc', 'win32-x64-gnu'],
@@ -39,11 +39,43 @@ function nativeCandidates() {
 
 function loadNativeBinding() {
   const attempted = [];
+  const loadErrors = [];
   for (const candidate of nativeCandidates()) {
     attempted.push(candidate);
-    if (fs.existsSync(candidate)) {
-      return require(candidate);
+    if (!fs.existsSync(candidate)) {
+      continue;
     }
+    try {
+      const binding = require(candidate);
+      if (loadErrors.length > 0) {
+        const details = loadErrors
+          .map(({ candidate: failed, err }) => `${failed}: ${err.message}`)
+          .join('\n');
+        process.emitWarning(
+          `Loaded fallback maxminddb native binding ${candidate} after earlier candidate(s) failed:\n${details}`,
+          { code: 'MAXMINDDB_NATIVE_BINDING_FALLBACK' }
+        );
+      }
+      return binding;
+    } catch (err) {
+      loadErrors.push({ candidate, err });
+    }
+  }
+
+  if (loadErrors.length === 1) {
+    throw loadErrors[0].err;
+  }
+
+  if (loadErrors.length > 1) {
+    const details = loadErrors
+      .map(({ candidate, err }) => `${candidate}: ${err.message}`)
+      .join('\n');
+    const error = new Error(
+      `Unable to load maxminddb native binding. Load errors:\n${details}`,
+      { cause: loadErrors[0].err }
+    );
+    error.code = 'ERR_MAXMINDDB_NATIVE_BINDING_LOAD_FAILED';
+    throw error;
   }
 
   const error = new Error(
@@ -54,6 +86,7 @@ function loadNativeBinding() {
 }
 
 const native = loadNativeBinding();
+const nativeVersion = native.nativeVersion;
 const pathFinalizer = new FinalizationRegistry(({ nativeReader, pathId }) => {
   try {
     nativeReader.releasePath(pathId);
@@ -127,27 +160,36 @@ function normalizeNetworkIteratorOptions(options = {}) {
   ];
 }
 
-function waitForFile(filepath) {
-  for (let i = 0; i < 3; i++) {
-    if (fs.existsSync(filepath)) {
-      return Promise.resolve(true);
+async function waitForFile(filepath, shouldStop) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (shouldStop()) {
+      return false;
     }
-  }
-
-  return new Promise((resolve) => {
-    let attempts = 0;
-    const retry = () => {
-      attempts += 1;
-      if (fs.existsSync(filepath)) {
-        resolve(true);
-      } else if (attempts >= 3) {
-        resolve(false);
-      } else {
-        setTimeout(retry, 500);
+    try {
+      await fs.promises.access(filepath);
+      return true;
+    } catch (error) {
+      const code = error?.code;
+      const isRetryable =
+        code === 'ENOENT' || code === 'EPERM' || code === 'EBUSY';
+      if (!isRetryable) {
+        throw error;
       }
-    };
-    retry();
-  });
+      if (attempt === 2) {
+        if (code === 'ENOENT') {
+          return false;
+        }
+        throw error;
+      }
+    }
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 500);
+      if (typeof timer.unref === 'function') {
+        timer.unref();
+      }
+    });
+  }
+  return false;
 }
 
 class PathLookup {
@@ -176,20 +218,35 @@ class PathLookup {
     }
   }
 
+  [Symbol.dispose]() {
+    this.close();
+  }
+
   _ensureCompiled() {
     if (this._closed) {
       throw new Error('Path lookup is closed.');
     }
     if (this._nativeReader !== this._reader._reader) {
+      const previousReader = this._nativeReader;
+      const previousPathId = this._pathId;
+      const nextReader = this._reader._reader;
+      const nextPathId = nextReader.compilePath(this.path);
       pathFinalizer.unregister(this);
-      this._nativeReader.releasePath(this._pathId);
-      this._compileFor(this._reader._reader);
+      previousReader.releasePath(previousPathId);
+      this._nativeReader = nextReader;
+      this._pathId = nextPathId;
+      pathFinalizer.register(
+        this,
+        { nativeReader: this._nativeReader, pathId: this._pathId },
+        this
+      );
     }
   }
 
   _compileFor(nativeReader) {
+    const pathId = nativeReader.compilePath(this.path);
     this._nativeReader = nativeReader;
-    this._pathId = nativeReader.compilePath(this.path);
+    this._pathId = pathId;
     pathFinalizer.register(
       this,
       { nativeReader: this._nativeReader, pathId: this._pathId },
@@ -300,6 +357,10 @@ class NetworkIterator {
       this._index = 0;
     }
   }
+
+  [Symbol.dispose]() {
+    this.close();
+  }
 }
 
 class Reader {
@@ -372,6 +433,9 @@ class Reader {
   }
 
   load(database) {
+    if (this.closed) {
+      throw new Error('Cannot load into a closed Reader');
+    }
     try {
       this._reader.load(database);
       this.metadata = normalizeMetadata(this._reader.metadata());
@@ -385,6 +449,9 @@ class Reader {
   reload() {
     if (!this._filepath) {
       throw new Error('Cannot reload a buffer-backed Reader');
+    }
+    if (this.closed) {
+      throw new Error('Cannot reload a closed Reader');
     }
     try {
       this._reader.reloadFromFile(this._filepath, this._mode);
@@ -400,18 +467,36 @@ class Reader {
     if (!this._filepath) {
       throw new Error('Cannot reload a buffer-backed Reader');
     }
+    if (this.closed) {
+      throw new Error('Cannot reload a closed Reader');
+    }
+    let replacement;
     try {
-      const replacement = await native.openReaderAsync(
+      replacement = await native.openReaderAsync(
         this._filepath,
         this._mode,
         this._cacheCapacity
       );
+    } catch (error) {
       if (this.closed) {
-        replacement.close();
         throw new Error('Cannot reload a closed Reader');
       }
+      this._lastReloadError = error;
+      throw error;
+    }
+    if (this.closed) {
+      replacement.close();
+      throw new Error('Cannot reload a closed Reader');
+    }
+    try {
       this._replaceNativeReader(replacement);
     } catch (error) {
+      if (this._reader !== replacement) {
+        replacement.close();
+      }
+      if (this.closed) {
+        throw new Error('Cannot reload a closed Reader');
+      }
       this._lastReloadError = error;
       throw error;
     }
@@ -436,6 +521,10 @@ class Reader {
     }
     this._watchReloadPending = false;
     this._reader.close();
+  }
+
+  [Symbol.dispose]() {
+    this.close();
   }
 
   _queueWatchedReload(filepath, mode, hook) {
@@ -466,29 +555,53 @@ class Reader {
   }
 
   async _reloadWatchedFile(filepath, mode, hook) {
-    if (!(await waitForFile(filepath))) {
-      return;
-    }
-    if (this.closed || this._watchFilepath !== filepath) {
-      return;
-    }
+    const isStale = () => this.closed || this._watchFilepath !== filepath;
 
+    let reloaded = false;
+    let replacement;
     try {
-      const replacement = await native.openReaderAsync(
+      if (!(await waitForFile(filepath, isStale))) {
+        if (!isStale()) {
+          this._lastReloadError = new Error(
+            `Database file not found: ${filepath}`
+          );
+        }
+        return;
+      }
+      if (isStale()) {
+        return;
+      }
+
+      replacement = await native.openReaderAsync(
         filepath,
         mode,
         this._cacheCapacity
       );
-      if (this.closed || this._watchFilepath !== filepath) {
+      if (isStale()) {
         replacement.close();
         return;
       }
       this._replaceNativeReader(replacement);
-      if (!this.closed && this._watchFilepath === filepath && hook) {
-        hook();
-      }
+      replacement = null;
+      reloaded = true;
     } catch (error) {
-      this._lastReloadError = error;
+      if (replacement && this._reader !== replacement) {
+        replacement.close();
+      }
+      if (!isStale()) {
+        this._lastReloadError = error;
+      }
+    }
+
+    if (reloaded && !isStale() && hook) {
+      try {
+        const result = hook();
+        if (result && typeof result.then === 'function') {
+          Promise.resolve(result).catch(emitHookWarning);
+        }
+      } catch (error) {
+        emitHookWarning(error);
+      }
     }
   }
 
@@ -562,19 +675,20 @@ async function open(filepath, opts, cb) {
   const options = opts || {};
 
   const mode = normalizeMode(options.mode);
+  if (
+    options.watchForUpdates &&
+    options.watchForUpdatesHook &&
+    typeof options.watchForUpdatesHook !== 'function'
+  ) {
+    throw new Error('opts.watchForUpdatesHook should be a function');
+  }
+
   const reader =
     mode === MODE_MEMORY || mode === MODE_BUFFER
       ? await Reader.openOwned(filepath, mode, options)
       : Reader.open(filepath, options);
 
   if (options.watchForUpdates) {
-    if (
-      options.watchForUpdatesHook &&
-      typeof options.watchForUpdatesHook !== 'function'
-    ) {
-      throw new Error('opts.watchForUpdatesHook should be a function');
-    }
-
     const watcherOptions = {
       persistent: options.watchForUpdatesNonPersistent !== true,
     };
@@ -599,13 +713,21 @@ function openSync() {
   throw new Error(legacyErrorMessage);
 }
 
+function emitHookWarning(error) {
+  if (error instanceof Error || typeof error === 'string') {
+    process.emitWarning(error);
+  } else {
+    process.emitWarning(new Error(util.inspect(error), { cause: error }));
+  }
+}
+
 function validate(ipAddress) {
   const version = net.isIP(ipAddress);
   return version === 4 || version === 6;
 }
 
 module.exports = {
-  nativeVersion: native.nativeVersion,
+  nativeVersion,
   NetworkIterator,
   PathLookup,
   Reader,
