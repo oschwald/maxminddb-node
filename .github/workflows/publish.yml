@@ -61,13 +61,9 @@ jobs:
           package-manager-cache: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
-
-      - name: Use current npm
-        run: npm install -g npm@latest
+        run: |
+          rustup default stable
+          rustup toolchain install stable --profile minimal --no-self-update --target ${{ matrix.target }}
 
       - name: Install dependencies
         run: npm ci
@@ -122,13 +118,9 @@ jobs:
           package-manager-cache: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: stable
-          components: rustfmt
-
-      - name: Use current npm
-        run: npm install -g npm@latest
+        run: |
+          rustup default stable
+          rustup toolchain install stable --profile minimal --no-self-update --component rustfmt
 
       - name: Install dependencies
         run: npm ci
