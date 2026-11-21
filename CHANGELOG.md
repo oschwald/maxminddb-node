@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-11-21
 
 ### Added
 
@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Marked the TypeScript constructors of `PathLookup` and `NetworkIterator` as
   `private`; obtain instances through `Reader` methods (`reader.path()`,
   `reader.networks()`, `reader.within()`, etc.).
+- Updated the Rust `napi` crate to 3.13.0, `napi-derive` to 3.6.9, and `lru`
+  to 0.18.5, and refreshed Rust and npm development dependencies.
 
 ### Fixed
 
