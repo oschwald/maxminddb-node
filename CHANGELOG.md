@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `Symbol.dispose` support on `Reader`, `PathLookup`, and
+  `NetworkIterator` (requires Node.js 20.4 or newer).
+
+### Changed
+
+- Raised the minimum supported Node.js version in `engines` to `>=20.4`.
+- Switched TypeScript declarations to CommonJS `export =` syntax to match the
+  runtime `module.exports`; default imports (`import maxmind from
+  '@oschwald/maxminddb'`) require `esModuleInterop` when emitting CommonJS, or
+  `allowSyntheticDefaultImports` when using a bundler or ESM runtime that
+  provides CJS default-import interop.
+- Marked the TypeScript constructors of `PathLookup` and `NetworkIterator` as
+  `private`; obtain instances through `Reader` methods (`reader.path()`,
+  `reader.networks()`, `reader.within()`, etc.).
+
 ### Fixed
 
 - Page iterators now close their native network cursor when iteration ends
@@ -14,6 +31,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Reader#networkPages()`, and `Reader#withinPages()`.
 - `NetworkIterator#next()` and `NetworkIterator#nextPage()` now close their
   native network cursor when reading a page raises an error.
+- Corrected `metadata.searchTreeSize` for search trees of 4 GiB or larger,
+  preserving the JavaScript Number API without 32-bit overflow.
+- Fixed pointer-aliasing UB and unbounded memory growth in the internal
+  property-name cache (bounded by both entry count and key length), and
+  cleared it on database reloads.
+- Prevented `load()` and `reload()` from reopening closed readers, rejected
+  closed readers in `load()`, `reload()`, and `reloadAsync()` without
+  recording `lastReloadError` (including concurrent closes during reload),
+  closed replacement readers if swapping fails before activation, checked
+  closed state before IPv4-only validation and async reload I/O, and avoided
+  leaking a `napi_ref` if record-cache promotion fails.
+- Made `PathLookup` recompilation exception-safe if compiling against a
+  reloaded reader fails.
+- Validated `watchForUpdatesHook` before opening databases, switched watched
+  reload file retries to non-blocking unref'd async checks that retry
+  transient `ENOENT`, `EPERM`, and `EBUSY` errors, recorded missing-file and
+  access reload errors on `lastReloadError`, and reported synchronous and
+  asynchronous `watchForUpdatesHook` failures via `process.emitWarning()`
+  instead of recording them as reload failures.
+- Improved native binding loading to fall through on failed candidates with a
+  warning (`MAXMINDDB_NATIVE_BINDING_FALLBACK`) if a later candidate loads,
+  preserve original load errors (`ERR_MAXMINDDB_NATIVE_BINDING_LOAD_FAILED`
+  or rethrowing a single load error), and added `darwin-universal` fallback
+  entries under `darwin` `x64`/`arm64`.
+- Fixed ESM named imports (`import { open, Reader } from '@oschwald/maxminddb'`)
+  by exporting shorthand bindings from `index.js`.
+- Fixed TypeScript declarations to export `NetworkIterator` on the default
+  export, support CJS/ESM interop cleanly via `export =`, allow custom
+  non-GeoIP2 database types on `Reader<T>`/`open<T>`, and add generic typing to
+  `getPath()`/`getManyPath()`.
+- Capped map property descriptor preallocation when decoding untrusted map
+  size hints.
+
+### Performance
+
+- Replaced SipHash with `FxBuildHasher` in internal record, property-name, and
+  per-page network caches.
+- Hoisted decode-scope guards out of batch and network-page loops, fast-pathed
+  missing records in `getPaths()`/`getManyPaths()`, and populated network page
+  arrays directly.
+- Stripped symbols from release `.node` binaries to reduce package size.
+
+### Development
+
+- Enabled Rust unit tests (`cargo test --lib`) using `napi/noop` in
+  dev-dependencies and added them to CI and the release script.
+- Expanded CI to include ARM64 runners, deduplicated `Mmap`/`Memory` dispatch,
+  fixed batch warmup and `--db` validation in `bench/lookup.js`, and cleaned up
+  temporary test directories.
 
 ## [0.4.0] - 2026-09-12
 
