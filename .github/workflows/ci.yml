@@ -60,10 +60,9 @@ jobs:
           cache-dependency-path: maxminddb-node/package-lock.json
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
+        run: |
+          rustup default stable
+          rustup toolchain install stable --profile minimal --no-self-update --component rustfmt,clippy
 
       - name: Install dependencies
         run: npm ci
