@@ -29,8 +29,51 @@ const platformTriples = {
   },
 };
 
+function isMuslLinux() {
+  try {
+    return fs.readFileSync('/usr/bin/ldd', 'utf8').includes('musl');
+  } catch {
+    // Some images have no ldd; fall back to the process report.
+  }
+  const processReport = process.report;
+  if (typeof processReport?.getReport !== 'function') {
+    return false;
+  }
+  // Network details are not needed and can make getReport() slow.
+  const excludeNetwork = processReport.excludeNetwork;
+  try {
+    processReport.excludeNetwork = true;
+    const sharedObjects = processReport.getReport()?.sharedObjects;
+    return (
+      Array.isArray(sharedObjects) &&
+      sharedObjects.some(
+        (file) =>
+          typeof file === 'string' &&
+          (file.includes('libc.musl-') || file.includes('ld-musl-'))
+      )
+    );
+  } catch {
+    return false;
+  } finally {
+    try {
+      processReport.excludeNetwork = excludeNetwork;
+    } catch {
+      // Ignore runtimes where the setting cannot be restored.
+    }
+  }
+}
+
 function nativeCandidates() {
-  const triples = platformTriples[process.platform]?.[process.arch] ?? [];
+  let triples = platformTriples[process.platform]?.[process.arch] ?? [];
+  if (process.platform === 'linux' && isMuslLinux()) {
+    // Try the musl build first so that musl systems such as Alpine do not
+    // load the glibc build, or warn after it fails to load.
+    const isMuslTriple = (triple) => triple.includes('musl');
+    triples = [
+      ...triples.filter(isMuslTriple),
+      ...triples.filter((triple) => !isMuslTriple(triple)),
+    ];
+  }
   return [
     ...triples.map((triple) => `index.${triple}.node`),
     'index.node',

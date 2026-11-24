@@ -1,6 +1,16 @@
 name: Publish
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/publish.yml
+      - Cargo.lock
+      - Cargo.toml
+      - build.rs
+      - index.js
+      - package-lock.json
+      - package.json
+      - src/**
   release:
     types:
       - published
@@ -27,9 +37,21 @@ jobs:
           - artifact: linux-x64-gnu
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            libc: gnu
+            build_args: --use-napi-cross
           - artifact: linux-arm64-gnu
             os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
+            libc: gnu
+            build_args: --use-napi-cross
+          - artifact: linux-x64-musl
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            libc: musl
+          - artifact: linux-arm64-musl
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+            libc: musl
           - artifact: darwin-x64
             os: macos-15-intel
             target: x86_64-apple-darwin
@@ -45,8 +67,27 @@ jobs:
             os: windows-11-arm
             target: aarch64-pc-windows-msvc
 
+    defaults:
+      run:
+        # The steps read their inputs from environment variables, so use the
+        # same shell on Windows as elsewhere.
+        shell: bash
+
     env:
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
+      TARGET: ${{ matrix.target }}
+      BUILD_ARGS: ${{ matrix.build_args }}
+      # Highest glibc symbol version the gnu addons may require. The napi-rs
+      # cross toolchain links against glibc 2.17.
+      GLIBC_FLOOR: "2.17"
+      # Images used to build and test outside the runner's own libc.
+      ALPINE_NODE_IMAGE: node:24-alpine
+      OLD_GLIBC_IMAGE: almalinux:8
+      SMOKE_TEST: >-
+        const pkg = require('./package.json');
+        const maxminddb = require('./');
+        if (maxminddb.nativeVersion() !== pkg.version)
+        throw new Error('native version mismatch')
 
     steps:
       - name: Checkout
@@ -61,18 +102,72 @@ jobs:
           package-manager-cache: false
 
       - name: Setup Rust
+        if: ${{ matrix.libc != 'musl' }}
         run: |
           rustup default stable
-          rustup toolchain install stable --profile minimal --no-self-update --target ${{ matrix.target }}
+          rustup toolchain install stable --profile minimal --no-self-update --target "$TARGET"
 
       - name: Install dependencies
+        if: ${{ matrix.libc != 'musl' }}
         run: npm ci
 
       - name: Build native module
-        run: npx napi build --target ${{ matrix.target }} --platform --release --no-js --dts native.d.ts
+        if: ${{ matrix.libc != 'musl' }}
+        # BUILD_ARGS is intentionally unquoted so that it can hold several
+        # arguments.
+        run: npx napi build --target "$TARGET" $BUILD_ARGS --platform --release --no-js --dts native.d.ts
+
+      - name: Build and smoke test native module on Alpine
+        if: ${{ matrix.libc == 'musl' }}
+        # The runner cannot load a musl addon, so build and test it inside an
+        # Alpine container of the same architecture. The loader tests also run
+        # there so that musl detection is checked on a real musl system.
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -e TARGET -e SMOKE_TEST \
+            "$ALPINE_NODE_IMAGE" sh -euxc '
+              apk add --no-cache build-base rustup
+              rustup-init -y --profile minimal --default-toolchain stable --no-modify-path
+              export PATH="$HOME/.cargo/bin:$PATH"
+              # napi defaults some musl targets to a cross linker such as
+              # aarch64-linux-musl-gcc; this build is native, so use gcc.
+              export "CARGO_TARGET_$(echo "$TARGET" | tr a-z- A-Z_)_LINKER=gcc"
+              npm ci
+              npx napi build --target "$TARGET" --platform --release --no-js --dts native.d.ts
+              node -e "$SMOKE_TEST"
+              node --test test/native-loader.test.js
+            '
+
+      - name: Check glibc floor
+        if: ${{ matrix.libc == 'gnu' }}
+        run: |
+          required="$(objdump -T index.*.node | { grep -o 'GLIBC_[0-9][0-9.]*' || true; } | sed 's/^GLIBC_//' | sort -uV | tail -n 1)"
+          echo "Highest required glibc symbol version: ${required:-none}"
+          if [ -n "$required" ] && [ "$(printf '%s\n%s\n' "$required" "$GLIBC_FLOOR" | sort -V | tail -n 1)" != "$GLIBC_FLOOR" ]; then
+            echo "::error::Native module requires glibc $required, above the $GLIBC_FLOOR floor"
+            exit 1
+          fi
 
       - name: Smoke test native module
-        run: node -e "const pkg = require('./package.json'); const maxminddb = require('./'); if (maxminddb.nativeVersion() !== pkg.version) throw new Error('native version mismatch')"
+        if: ${{ matrix.libc != 'musl' }}
+        run: node -e "$SMOKE_TEST"
+
+      - name: Smoke test native module on glibc 2.28
+        if: ${{ matrix.libc == 'gnu' }}
+        # glibc 2.28 (RHEL 8) is the oldest glibc that official Node.js 20,
+        # 22, and 24 Linux builds run on. Reuse the runner's Node.js inside an
+        # AlmaLinux 8 container to check that the addon loads there.
+        run: |
+          node_dir="$(dirname "$(dirname "$(readlink -f "$(command -v node)")")")"
+          docker run --rm \
+            -v "$PWD:/work:ro" -w /work \
+            -v "$node_dir:/opt/node:ro" \
+            -e SMOKE_TEST \
+            "$OLD_GLIBC_IMAGE" sh -euxc '
+              ldd --version | head -n 1
+              /opt/node/bin/node -e "$SMOKE_TEST"
+            '
 
       - name: Upload native module
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -83,6 +178,8 @@ jobs:
 
   publish:
     name: Publish to npm
+    # Pull requests only check that the native modules build.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     needs:
       - build-binaries
@@ -137,6 +234,8 @@ jobs:
           cp ../native-artifacts/*.node .
           test -f index.linux-x64-gnu.node
           test -f index.linux-arm64-gnu.node
+          test -f index.linux-x64-musl.node
+          test -f index.linux-arm64-musl.node
           test -f index.darwin-x64.node
           test -f index.darwin-arm64.node
           test -f index.win32-x64-msvc.node

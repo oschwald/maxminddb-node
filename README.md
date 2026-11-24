@@ -194,9 +194,16 @@ npm run bench -- --compare-node-maxmind --db /path/to/db.mmdb
 
 ## Supported Platforms
 
-The npm package is set up to ship prebuilt native modules for Linux x64 GNU,
-Linux arm64 GNU, macOS x64, macOS arm64, Windows x64 MSVC, and Windows arm64
-MSVC. The loader also knows platform-specific filenames for additional Linux,
+The npm package is set up to ship prebuilt native modules for Linux x64 and
+arm64 (glibc and musl), macOS x64, macOS arm64, Windows x64 MSVC, and Windows
+arm64 MSVC.
+
+The Linux glibc modules are built against glibc 2.17, so they load on any
+distribution that can run the official Node.js binaries, such as RHEL 8,
+Ubuntu 20.04, and Debian 11. The musl modules cover Alpine and other musl
+distributions.
+
+The loader also knows platform-specific filenames for additional Linux,
 Windows, and FreeBSD targets, but those artifacts are not part of the default
 trusted publishing workflow yet. See [RELEASE.md](./RELEASE.md) for the native
 artifact strategy.
