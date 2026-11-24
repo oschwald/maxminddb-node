@@ -184,6 +184,48 @@ test('looks up batches', async () => {
   ]);
 });
 
+test('large batches match per-IP lookups', async () => {
+  const database = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+  for (const options of [{}, { cache: false }]) {
+    const reader = await maxmind.open(database, options);
+    const networks = [...reader.networks()].map(([network]) =>
+      network.split('/')[0]
+    );
+    // Use a batch that spans several native handle scopes and does not end on
+    // a scope boundary, including IPs with no record.
+    const ips = [];
+    for (let i = 0; ips.length < 1_000; i++) {
+      ips.push(networks[i % networks.length]);
+      if (i % 7 === 0) {
+        ips.push('1.1.1.1');
+      }
+    }
+    const paths = [
+      ['country', 'iso_code'],
+      ['city', 'names', 'en'],
+    ];
+    const countryCode = reader.path(paths[0]);
+
+    assert.deepEqual(
+      reader.getMany(ips),
+      ips.map((ip) => reader.get(ip))
+    );
+    assert.deepEqual(
+      reader.getManyPath(ips, paths[0]),
+      ips.map((ip) => reader.getPath(ip, paths[0]))
+    );
+    assert.deepEqual(
+      reader.getManyPaths(ips, paths),
+      ips.map((ip) => reader.getPaths(ip, paths))
+    );
+    assert.deepEqual(
+      countryCode.getMany(ips),
+      ips.map((ip) => countryCode.get(ip))
+    );
+    reader.close();
+  }
+});
+
 test('looks up multi-field projections', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
   const ips = ['1.1.1.1', '175.16.199.1', '81.2.69.142'];
@@ -487,6 +529,45 @@ test('reuses shared network records only when caching is enabled', async () => {
     uncachedRecords.get('81.2.69.192/28')
   );
   uncached.close();
+});
+
+test('shares cached network records across a large page', async () => {
+  // Keep in sync with VALUES_PER_HANDLE_SCOPE in src/lib.rs.
+  const valuesPerHandleScope = 64;
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const options = { includeAliasedNetworks: true, pageSize: 1_000 };
+  const page = reader.networkPages(options).next().value;
+  assert.deepEqual(
+    page,
+    [...reader.networks(options)].slice(0, options.pageSize)
+  );
+
+  // The record cache returns one object per data offset, so it tells us which
+  // networks share a record. Within a page, those networks must get the same
+  // object too, even when they were converted in different handle scopes.
+  const firstSeen = new Map();
+  let crossScopeMatches = 0;
+  for (const [index, [network, record]] of page.entries()) {
+    const offsetKey = reader.get(network.split('/')[0]);
+    const first = firstSeen.get(offsetKey);
+    if (first === undefined) {
+      firstSeen.set(offsetKey, { index, record });
+      continue;
+    }
+    assert.strictEqual(record, first.record);
+    if (
+      Math.floor(index / valuesPerHandleScope) !==
+      Math.floor(first.index / valuesPerHandleScope)
+    ) {
+      crossScopeMatches++;
+    }
+  }
+  assert.equal(
+    new Set(page.map(([, record]) => record)).size,
+    firstSeen.size
+  );
+  assert(crossScopeMatches > 0);
+  reader.close();
 });
 
 test('paginates networks within a CIDR', async () => {

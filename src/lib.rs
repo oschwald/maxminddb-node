@@ -40,6 +40,12 @@ use std::{
     sync::Arc,
 };
 
+/// How many batch results or network-page entries to convert before closing
+/// the handle scope that holds their temporary handles. Opening a scope has a
+/// fixed cost, so one scope per value slows small batches, while a scope per
+/// call lets handles pile up and slows garbage collection in large ones.
+pub(crate) const VALUES_PER_HANDLE_SCOPE: usize = 64;
+
 const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
 const ERR_REENTRANT_DB: &str = "MaxMind DB reader is already in use.";
 const ERR_GZIP_DB: &str =
@@ -626,8 +632,19 @@ fn collect_lookup_results<'env>(
 ) -> Result<Unknown<'env>> {
     let length = u32::try_from(ips.len()).map_err(|_| invalid_arg("too many IP addresses"))?;
     let mut values = env.create_array(length)?;
-    for (index, ip) in ips.into_iter().enumerate() {
-        values.set(index as u32, lookup(ip)?)?;
+    // Decoded values are reachable from `values` once stored, so their handles
+    // (and the intermediate handles created while decoding them) can be
+    // released. Without nested scopes they all stay live until the call
+    // returns, and every GC during a large batch has to scan them.
+    let mut index: u32 = 0;
+    for chunk in ips.chunks(VALUES_PER_HANDLE_SCOPE) {
+        env.run_in_scope(|| {
+            for &ip in chunk {
+                values.set(index, lookup(ip)?)?;
+                index += 1;
+            }
+            Ok(())
+        })?;
     }
     values.into_unknown(env)
 }
