@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   such as `fe80::1%eth0`. `net.isIP()` accepts them, but `get()` and the other
   lookup methods throw on them, so a validated address could still fail a
   lookup. `node-maxmind` returns `true` for these addresses.
+- The TypeScript declarations now reference the Node.js types and the
+  `esnext.disposable` library themselves, so projects that type-check library
+  files (`skipLibCheck: false`) no longer fail on `Buffer` or `Symbol.dispose`
+  without extra compiler options. `@types/node` (20 or newer) is now an
+  optional peer dependency, and TypeScript 5.2 or newer is required.
 
 ## [0.5.0] - 2026-11-21
 
