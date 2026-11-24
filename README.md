@@ -88,6 +88,12 @@ does not call `watchForUpdatesHook`. `lastReloadError` follows the same order:
 a failed read that began before the installed database was read does not set
 it, and a database read before a failed read does not clear it.
 
+File system failures when opening or reloading a database set the same `code`
+(for example `ENOENT`, `EACCES` or `EISDIR`), `syscall` and `path` properties as
+Node's own `fs` errors, and the message names the file, so callers can check
+`err.code === 'ENOENT'`. A failed reload stores the same error on
+`reader.lastReloadError`.
+
 ## Extensions
 
 ```js

@@ -13,7 +13,7 @@ use crate::{
         lookup_result_path_to_js, lookup_result_paths_to_js, lookup_result_record_to_js,
         JsDecodeEnvGuard,
     },
-    errors::{invalid_arg, lookup_error, napi_error, open_error},
+    errors::{invalid_arg, lookup_error, napi_error, open_error, FileError, OpenError, OpenResult},
     ip::{parse_js_ip, parse_network, prefix_len_for_lookup},
     metadata::metadata_to_js,
     networks::{collect_next_networks_page_to_js, make_within_options, NetworkIter},
@@ -74,15 +74,25 @@ fn next_read_sequence() -> u64 {
 
 // A database read's result, with the read sequence taken before it failed
 // when the failure happened after the read began.
-type ReadResult<T> = std::result::Result<(T, u64), (napi::Error, Option<u64>)>;
+type ReadResult<T> = std::result::Result<(T, u64), ReadFailure>;
+type ReadFailure = (OpenError, Option<u64>);
 
-fn open_file_with_sequence(path: &Path) -> ReadResult<File> {
+fn open_file_with_sequence(path: &str) -> ReadResult<File> {
     let _guard = OPEN_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let read_sequence = next_read_sequence();
-    let file = File::open(path)
-        .map_err(MaxMindDbError::Io)
-        .map_err(|error| (open_error(error), Some(read_sequence)))?;
+    let file = File::open(Path::new(path))
+        .map_err(|error| (open_file_error(&error, path).into(), Some(read_sequence)))?;
     Ok((file, read_sequence))
+}
+
+// Converts a failed database read into a JavaScript error. File system
+// failures keep `code`, `syscall` and `path`; both kinds carry the read
+// sequence when there is one.
+fn read_failure_error(env: &Env, (error, read_sequence): ReadFailure) -> napi::Error {
+    match error {
+        OpenError::Other(error) => error_with_read_sequence(env, error, read_sequence),
+        OpenError::File(file_error) => file_error.into_napi(env, read_sequence),
+    }
 }
 
 // Attaches the failed read's sequence to the JavaScript error as
@@ -181,6 +191,9 @@ pub struct OpenReaderTask {
     mode: String,
     cache_capacity: Option<u32>,
     failed_read_sequence: Option<u64>,
+    // A file error found off the JS thread; `reject` turns it into a JS error
+    // with `code`, `syscall` and `path` set.
+    file_error: Option<FileError>,
 }
 
 pub struct OpenReaderOutput(ReaderSource, u64);
@@ -194,7 +207,14 @@ impl Task for OpenReaderTask {
             Ok((source, read_sequence)) => Ok(OpenReaderOutput(source, read_sequence)),
             Err((error, read_sequence)) => {
                 self.failed_read_sequence = read_sequence;
-                Err(error)
+                match error {
+                    OpenError::Other(error) => Err(error),
+                    OpenError::File(file_error) => {
+                        let message = file_error.message();
+                        self.file_error = Some(file_error);
+                        Err(napi_error(message))
+                    }
+                }
             }
         }
     }
@@ -204,11 +224,10 @@ impl Task for OpenReaderTask {
     }
 
     fn reject(&mut self, env: Env, error: napi::Error) -> Result<Self::JsValue> {
-        Err(error_with_read_sequence(
-            &env,
-            error,
-            self.failed_read_sequence,
-        ))
+        Err(match self.file_error.take() {
+            Some(file_error) => file_error.into_napi(&env, self.failed_read_sequence),
+            None => error_with_read_sequence(&env, error, self.failed_read_sequence),
+        })
     }
 }
 
@@ -396,10 +415,8 @@ impl NativeReader {
         if self.state()?.reader.is_none() {
             return Err(invalid_arg(ERR_CLOSED_DB));
         }
-        let (new_reader, read_sequence) =
-            open_source(&path, mode.as_deref()).map_err(|(error, read_sequence)| {
-                error_with_read_sequence(env, error, read_sequence)
-            })?;
+        let (new_reader, read_sequence) = open_source(&path, mode.as_deref())
+            .map_err(|failure| read_failure_error(env, failure))?;
         self.replace_reader(env, new_reader, read_sequence)
     }
 
@@ -831,7 +848,7 @@ pub fn open_reader(
 ) -> Result<NativeReader> {
     open_source(&path, mode.as_deref())
         .map(|(source, read_sequence)| create_reader(&env, source, read_sequence, cache_capacity))
-        .map_err(|(error, _)| error)
+        .map_err(|(error, _)| read_failure_error(&env, (error, None)))
 }
 
 #[napi(js_name = "openReaderAsync")]
@@ -845,6 +862,7 @@ pub fn open_reader_async(
         mode,
         cache_capacity,
         failed_read_sequence: None,
+        file_error: None,
     })
 }
 
@@ -887,36 +905,69 @@ fn create_reader(
 fn open_source(path: &str, mode: Option<&str>) -> ReadResult<ReaderSource> {
     let mode = mode.unwrap_or("mmap");
     if !matches!(mode, "auto" | "mmap" | "memory" | "buffer") {
-        return Err((invalid_arg(format!("Unsupported open mode: {mode}")), None));
+        return Err((
+            invalid_arg(format!("Unsupported open mode: {mode}")).into(),
+            None,
+        ));
     }
-    let (file, read_sequence) = open_file_with_sequence(Path::new(path))?;
-    let source = if matches!(mode, "auto" | "mmap") {
-        open_mmap_reader(file).map(ReaderSource::Mmap)
-    } else {
-        open_memory_reader(file)
-    }
-    .map_err(|error| (error, Some(read_sequence)))?;
+    let (file, read_sequence) = open_file_with_sequence(path)?;
+    let source = read_database(file, path, matches!(mode, "auto" | "mmap"))
+        .map_err(|error| (error, Some(read_sequence)))?;
     Ok((source, read_sequence))
 }
 
-fn open_mmap_reader(file: File) -> Result<MaxMindReader<Mmap>> {
-    // SAFETY: The mapping is read-only. Callers should replace database files
-    // atomically rather than mutating an open file in place.
-    let mmap = unsafe { MmapOptions::new().map(&file) }
-        .map_err(MaxMindDbError::Mmap)
-        .map_err(open_error)?;
-    reject_gzip(mmap.as_ref())?;
-    MaxMindReader::from_source(mmap).map_err(open_error)
+fn read_database(file: File, path: &str, mmap: bool) -> OpenResult<ReaderSource> {
+    let len = database_len(&file, path)?;
+    if mmap {
+        open_mmap_reader(&file, len, path).map(ReaderSource::Mmap)
+    } else {
+        open_memory_reader(file, len, path)
+    }
 }
 
-fn open_memory_reader(mut file: File) -> Result<ReaderSource> {
+/// Returns the length of an opened database file and rejects directories, so
+/// every mode reports a directory the same way.
+fn database_len(file: &File, path: &str) -> OpenResult<u64> {
+    let metadata = file
+        .metadata()
+        .map_err(|err| FileError::from_io(&err, "fstat", path))?;
+    if metadata.is_dir() {
+        return Err(FileError::is_a_directory("read", path).into());
+    }
+    Ok(metadata.len())
+}
+
+#[cfg(windows)]
+fn open_file_error(err: &std::io::Error, path: &str) -> FileError {
+    // Windows refuses to open a directory as a file with "access denied".
+    if err.kind() == std::io::ErrorKind::PermissionDenied && Path::new(path).is_dir() {
+        FileError::is_a_directory("open", path)
+    } else {
+        FileError::from_io(err, "open", path)
+    }
+}
+
+#[cfg(not(windows))]
+fn open_file_error(err: &std::io::Error, path: &str) -> FileError {
+    FileError::from_io(err, "open", path)
+}
+
+fn open_mmap_reader(file: &File, len: u64, path: &str) -> OpenResult<MaxMindReader<Mmap>> {
+    let len = usize::try_from(len).map_err(|_| FileError::too_large("mmap", path))?;
+    // SAFETY: The mapping is read-only. Callers should replace database files
+    // atomically rather than mutating an open file in place.
+    let mmap = unsafe { MmapOptions::new().len(len).map(file) }
+        .map_err(|err| FileError::from_io(&err, "mmap", path))?;
+    reject_gzip(mmap.as_ref())?;
+    Ok(MaxMindReader::from_source(mmap).map_err(open_error)?)
+}
+
+fn open_memory_reader(mut file: File, len: u64, path: &str) -> OpenResult<ReaderSource> {
+    let read_error = |err: std::io::Error| FileError::from_io(&err, "read", path);
     let mut prefix = [0_u8; 2];
     let mut prefix_len = 0;
     while prefix_len < prefix.len() {
-        let read = file
-            .read(&mut prefix[prefix_len..])
-            .map_err(MaxMindDbError::Io)
-            .map_err(open_error)?;
+        let read = file.read(&mut prefix[prefix_len..]).map_err(read_error)?;
         if read == 0 {
             break;
         }
@@ -924,17 +975,11 @@ fn open_memory_reader(mut file: File) -> Result<ReaderSource> {
     }
     reject_gzip(&prefix[..prefix_len])?;
 
-    let capacity = file
-        .metadata()
-        .ok()
-        .and_then(|metadata| usize::try_from(metadata.len()).ok())
-        .unwrap_or(prefix_len);
+    let capacity = usize::try_from(len).unwrap_or(prefix_len);
     let mut bytes = Vec::with_capacity(capacity);
     bytes.extend_from_slice(&prefix[..prefix_len]);
-    file.read_to_end(&mut bytes)
-        .map_err(MaxMindDbError::Io)
-        .map_err(open_error)?;
-    memory_source(bytes)
+    file.read_to_end(&mut bytes).map_err(read_error)?;
+    Ok(memory_source(bytes)?)
 }
 
 fn memory_source(bytes: Vec<u8>) -> Result<ReaderSource> {

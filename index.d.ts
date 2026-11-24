@@ -229,7 +229,7 @@ declare namespace maxmind {
   export class Reader<T = Response> {
     constructor(database: Buffer, options?: OpenOpts);
     readonly closed: boolean;
-    readonly lastReloadError: Error | null;
+    readonly lastReloadError: NodeJS.ErrnoException | null;
     metadata: Metadata;
     load(database: Buffer): void;
     reload(): void;

@@ -17,12 +17,15 @@ async function checkTypes() {
   const city = opened.get('8.8.8.8');
   city?.country?.iso_code;
   const cacheHits: number = opened.cacheStats().hits;
-  const lastReloadError: Error | null = opened.lastReloadError;
+  const lastReloadError: NodeJS.ErrnoException | null =
+    opened.lastReloadError;
   opened.clearCache();
   const reloaded: boolean = await opened.reloadAsync();
   void reloaded;
   void cacheHits;
+  const reloadErrorCode: string | undefined = lastReloadError?.code;
   void lastReloadError;
+  void reloadErrorCode;
 
   const tuple = opened.getWithPrefixLength('8.8.8.8');
   const prefixLength: number = tuple[1];

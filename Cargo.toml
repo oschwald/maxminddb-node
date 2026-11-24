@@ -21,6 +21,9 @@ rustc-hash = "2.1.3"
 self_cell = "1.3.0"
 serde = "1.0.229"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
 [dev-dependencies]
 napi = { version = "3.12.4", default-features = false, features = ["napi8", "noop"] }
 
