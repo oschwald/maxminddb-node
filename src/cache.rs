@@ -140,8 +140,8 @@ impl RecordCache {
         )
         .unwrap();
         Self {
-            probationary: LruCache::with_hasher(probationary_capacity, FxBuildHasher),
-            protected: protected_capacity.map(|cap| LruCache::with_hasher(cap, FxBuildHasher)),
+            probationary: lazy_lru(probationary_capacity),
+            protected: protected_capacity.map(lazy_lru),
             capacity,
             hits: 0,
             misses: 0,
@@ -215,6 +215,17 @@ impl RecordCache {
     }
 }
 
+// `LruCache::with_hasher` reserves its hash table for the full capacity, so a
+// large `cache.max` would allocate (or abort while allocating) the whole cache
+// up front. Starting unbounded and then resizing an empty cache sets the
+// capacity without reserving anything, so the table grows only as entries are
+// added. `push` still evicts at the capacity and reuses the evicted node.
+fn lazy_lru<V>(capacity: NonZeroUsize) -> LruCache<usize, V, FxBuildHasher> {
+    let mut cache = LruCache::unbounded_with_hasher(FxBuildHasher);
+    cache.resize(capacity);
+    cache
+}
+
 pub(crate) fn cache_stats_to_js<'env>(
     env: &'env Env,
     cache: &Option<RecordCache>,
@@ -244,8 +255,25 @@ pub(crate) fn cache_stats_to_js<'env>(
 
 #[cfg(test)]
 mod tests {
-    use super::{PropertyNameCache, MAX_PROPERTY_NAME_CACHE_ENTRIES, MAX_PROPERTY_NAME_KEY_BYTES};
-    use std::ffi::CStr;
+    use super::{
+        lazy_lru, PropertyNameCache, MAX_PROPERTY_NAME_CACHE_ENTRIES, MAX_PROPERTY_NAME_KEY_BYTES,
+    };
+    use std::{ffi::CStr, num::NonZeroUsize};
+
+    #[test]
+    fn lazy_lru_does_not_preallocate_and_evicts_at_capacity() {
+        // Preallocating this capacity would need well over 100 GB and abort.
+        let large = lazy_lru::<usize>(NonZeroUsize::new(u32::MAX as usize).unwrap());
+        assert_eq!(large.cap().get(), u32::MAX as usize);
+        assert!(large.is_empty());
+
+        let mut cache = lazy_lru(NonZeroUsize::new(2).unwrap());
+        assert_eq!(cache.push(1, "a"), None);
+        assert_eq!(cache.push(2, "b"), None);
+        assert_eq!(cache.push(3, "c"), Some((1, "a")));
+        assert_eq!(cache.push(3, "d"), Some((3, "c")));
+        assert_eq!(cache.len(), 2);
+    }
 
     #[test]
     fn caches_property_names_with_stable_pointers_across_rehashes() {

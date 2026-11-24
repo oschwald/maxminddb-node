@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Readers that hold the database in native memory (`new Reader(buffer)`,
   `MODE_MEMORY`, and `MODE_BUFFER`) now report that memory to V8, so readers
   dropped without `close()` are garbage collected before memory runs out.
+- Large `cache.max` values no longer allocate the whole record cache when a
+  reader is opened or reloaded with `reloadAsync()` or a file watch.
+  Previously the largest accepted value aborted Node with a failed memory
+  allocation; the cache now grows as records are added.
 
 ## [0.5.0] - 2026-11-21
 

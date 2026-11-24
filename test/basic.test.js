@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -119,6 +120,74 @@ test('rejects invalid cache sizes', () => {
     () => new maxmind.Reader(buffer, { cache: { max: 0 } }),
     /positive 32-bit integer/
   );
+});
+
+test('evicts least recently used records at small capacities', () => {
+  const buffer = fs.readFileSync(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  const reader = new maxmind.Reader(buffer, { cache: { max: 1 } });
+
+  const first = reader.get('175.16.199.1');
+  const second = reader.get('81.2.69.160');
+  assert.notEqual(first, null);
+  assert.notEqual(second, null);
+  assert.deepEqual(reader.cacheStats(), {
+    enabled: true,
+    size: 1,
+    capacity: 1,
+    hits: 0,
+    misses: 2,
+    inserts: 2,
+    evictions: 1,
+  });
+  assert.strictEqual(reader.get('81.2.69.160'), second);
+  assert.notStrictEqual(reader.get('175.16.199.1'), first);
+  assert.equal(reader.cacheStats().size, 1);
+  assert.equal(reader.cacheStats().evictions, 2);
+});
+
+test('does not preallocate large record caches', () => {
+  // Run in a child process: before the fix, the largest accepted cache.max
+  // aborted Node while allocating the cache, which JS cannot catch.
+  const script = `
+    const fs = require('node:fs');
+    const maxmind = require(${JSON.stringify(path.join(__dirname, '..'))});
+    const buffer = fs.readFileSync(${JSON.stringify(
+      path.join(dataDir, 'GeoIP2-City-Test.mmdb')
+    )});
+    const results = [];
+    for (const max of [50_000_000, 0xffffffff]) {
+      const before = process.memoryUsage().rss;
+      const reader = new maxmind.Reader(buffer, { cache: { max } });
+      const rssGrowth = process.memoryUsage().rss - before;
+      const record = reader.get('175.16.199.1');
+      const cached = reader.get('175.16.199.1') === record;
+      results.push({ rssGrowth, cached, stats: reader.cacheStats() });
+      reader.close();
+    }
+    process.stdout.write(JSON.stringify(results));
+  `;
+  const result = spawnSync(process.execPath, ['-e', script], {
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+
+  const [medium, largest] = JSON.parse(result.stdout);
+  for (const [entry, max] of [
+    [medium, 50_000_000],
+    [largest, 0xffffffff],
+  ]) {
+    // Preallocating 50,000,000 entries added about 67 MB of RSS. Opening now
+    // adds next to nothing, so a wide margin keeps this stable across
+    // platforms; the Rust unit test checks the constructor directly.
+    assert(
+      entry.rssGrowth < 32 * 1024 * 1024,
+      `cache.max ${max} grew RSS by ${entry.rssGrowth} bytes`
+    );
+    assert.equal(entry.cached, true);
+    assert.equal(entry.stats.capacity, max);
+    assert.equal(entry.stats.size, 1);
+    assert.equal(entry.stats.hits, 1);
+  }
 });
 
 test('returns prefix length', async () => {
