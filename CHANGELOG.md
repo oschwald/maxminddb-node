@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Added prebuilt native modules for Linux x64 and arm64 on musl (Alpine). On
+  musl systems the loader now tries the musl module before the glibc one.
+
 ### Changed
 
+- The Linux glibc native modules are now built against glibc 2.17 instead of
+  needing glibc 2.34, so they load on RHEL 8, Ubuntu 20.04, Debian 11, and
+  other distributions supported by the official Node.js binaries.
 - `getMany()`, `getManyPath()`, `getManyPaths()`, compiled path `getMany()`,
   and network page reads now release temporary JavaScript handles as they go
   instead of holding them until the call returns, which makes large uncached

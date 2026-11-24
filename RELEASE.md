@@ -32,15 +32,31 @@ prebuilt native modules:
 
 - Linux x64 GNU: `index.linux-x64-gnu.node`
 - Linux arm64 GNU: `index.linux-arm64-gnu.node`
+- Linux x64 musl: `index.linux-x64-musl.node`
+- Linux arm64 musl: `index.linux-arm64-musl.node`
 - macOS x64: `index.darwin-x64.node`
 - macOS arm64: `index.darwin-arm64.node`
 - Windows x64 MSVC: `index.win32-x64-msvc.node`
 - Windows arm64 MSVC: `index.win32-arm64-msvc.node`
 
-The workflow does not currently build Linux musl/Alpine, Linux armv7, Linux
-ppc64/s390x/riscv64, Windows ia32, or FreeBSD artifacts. The loader supports
-platform-specific filenames for several of those targets, so adding them is a
-release automation task rather than a runtime API change.
+The Linux GNU modules are built with the napi-rs cross toolchain
+(`napi build --use-napi-cross`), which links against glibc 2.17. The workflow
+fails if a GNU module needs a newer glibc symbol than that, and it loads each
+GNU module with Node.js in an AlmaLinux 8 (glibc 2.28) container, the oldest
+glibc that official Node.js 20, 22, and 24 Linux builds support. The musl
+modules are built and smoke-tested inside a `node:24-alpine` container on a
+runner of the same architecture. On musl systems the loader tries the musl
+module before the GNU one.
+
+The workflow does not currently build Linux armv7, Linux ppc64/s390x/riscv64,
+Windows ia32, or FreeBSD artifacts. The loader supports platform-specific
+filenames for several of those targets, so adding them is a release automation
+task rather than a runtime API change.
+
+Pull requests that change `.github/workflows/publish.yml`, the Rust sources,
+the loader, or the dependency manifests run the `build-binaries` job so that
+release build problems, such as a dependency that needs a newer glibc, show up
+before a release. The `publish` job does not run for pull requests.
 
 ## Publishing Strategy
 
