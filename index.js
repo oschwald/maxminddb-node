@@ -723,7 +723,13 @@ function emitHookWarning(error) {
 
 function validate(ipAddress) {
   const version = net.isIP(ipAddress);
-  return version === 4 || version === 6;
+  if (version === 4) {
+    return true;
+  }
+  // net.isIP() accepts IPv6 zone identifiers such as fe80::1%eth0, but
+  // get() and the other lookup methods reject them. Keep validate() in
+  // agreement with the lookups so a validated address never throws.
+  return version === 6 && !ipAddress.includes('%');
 }
 
 module.exports = {

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- `validate()` now returns `false` for IPv6 addresses with a zone identifier,
+  such as `fe80::1%eth0`. `net.isIP()` accepts them, but `get()` and the other
+  lookup methods throw on them, so a validated address could still fail a
+  lookup. `node-maxmind` returns `true` for these addresses.
+
 ## [0.5.0] - 2026-11-21
 
 ### Added

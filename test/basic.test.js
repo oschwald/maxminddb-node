@@ -29,6 +29,16 @@ test('validates IP addresses', () => {
   assert.equal(maxmind.validate('whhaaaazza'), false);
 });
 
+test('validate() rejects IPv6 zone identifiers that get() rejects', async () => {
+  const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
+  for (const ip of ['fe80::1%eth0', 'fe80::1%1', '::ffff:1.2.3.4%en0']) {
+    assert.equal(maxmind.validate(ip), false, ip);
+    assert.throws(() => reader.get(ip), /Invalid IP address/, ip);
+  }
+  assert.equal(maxmind.validate('fe80::1'), true);
+  assert.equal(reader.get('fe80::1'), null);
+});
+
 test('opens database and looks up records', async () => {
   const reader = await maxmind.open(path.join(dataDir, 'GeoIP2-City-Test.mmdb'));
 
