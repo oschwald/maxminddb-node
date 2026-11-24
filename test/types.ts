@@ -19,7 +19,8 @@ async function checkTypes() {
   const cacheHits: number = opened.cacheStats().hits;
   const lastReloadError: Error | null = opened.lastReloadError;
   opened.clearCache();
-  await opened.reloadAsync();
+  const reloaded: boolean = await opened.reloadAsync();
+  void reloaded;
   void cacheHits;
   void lastReloadError;
 

@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Corrected the README, which said `getMany()` was significantly faster than
   calling `get()` in a loop. Batch path lookups are faster than their loops;
   `getMany()` is not.
+- `reloadAsync()` now resolves to `true` when it installed its replacement
+  database and `false` when it was superseded (previously `undefined`).
 
 ### Fixed
 
@@ -35,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reader is opened or reloaded with `reloadAsync()` or a file watch.
   Previously the largest accepted value aborted Node with a failed memory
   allocation; the cache now grows as records are added.
+- An older `reloadAsync()` or watched reload no longer replaces a database
+  that was read later by `load()`, `reload()`, `reloadAsync()`, or a watched
+  reload. Reloads are ordered by when each one opens its file, the superseded
+  replacement is closed, and a superseded watched reload skips
+  `watchForUpdatesHook`. `lastReloadError` follows the same order, so a
+  failure or success that finishes late no longer overwrites the outcome of a
+  later read.
 
 ## [0.5.0] - 2026-11-21
 

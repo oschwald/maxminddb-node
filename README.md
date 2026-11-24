@@ -70,14 +70,23 @@ paths and do not populate the full-record cache.
 When `watchForUpdates` is enabled, file-change reloads run serially. A failed
 watched reload leaves the existing reader active, stores the failure on
 `reader.lastReloadError`, and skips `watchForUpdatesHook`. The next successful
-reload clears `lastReloadError` and calls the hook. If the hook throws or
-returns a rejected promise, the error is reported with `process.emitWarning()`
-and does not change `lastReloadError`. Close watched readers with
-`reader.close()` to remove the file watcher.
+reload that reads the file after the failed read clears `lastReloadError` and
+calls the hook. If the hook throws or returns a rejected promise, the error is
+reported with `process.emitWarning()` and does not change `lastReloadError`.
+Close watched readers with `reader.close()` to remove the file watcher.
 
 Call `await reader.reloadAsync()` to open and validate a replacement database
 on a worker thread before atomically swapping it into the reader. The existing
 `reader.reload()` remains available when synchronous replacement is preferred.
+
+Overlapping reloads never roll the reader back to an older database. Reloads
+are ordered by when each one opens its file (or `load()` receives its buffer).
+If the installed database was read after a `reloadAsync()` or watched reload
+opened its file, the older replacement is closed and discarded:
+`reloadAsync()` resolves to `false` instead of `true`, and a watched reload
+does not call `watchForUpdatesHook`. `lastReloadError` follows the same order:
+a failed read that began before the installed database was read does not set
+it, and a database read before a failed read does not clear it.
 
 ## Extensions
 
