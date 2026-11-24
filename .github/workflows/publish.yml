@@ -106,6 +106,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: oschwald/maxminddb-rust
+          # Pinned so that changes to maxminddb-rust cannot break CI or a
+          # release without a commit here. Bump deliberately, and keep this in
+          # sync with the same checkout in ci.yml.
+          ref: dffc914957544b371ed014c222c74942b1e620e2
           path: maxminddb-rust
           submodules: recursive
           persist-credentials: false
