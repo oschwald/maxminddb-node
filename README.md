@@ -40,7 +40,9 @@ CommonJS `require()` is also supported for compatibility with existing
 - `reader.getWithPrefixLength(ipAddress)`
 - `reader.load(buffer)`
 - `reader.metadata`
-- `validate(ipAddress)`
+- `validate(ipAddress)` returns `false` for IPv6 addresses with a zone
+  identifier, such as `fe80::1%eth0`, because the lookup methods reject them.
+  `node-maxmind` returns `true` for these.
 - `init()` and `openSync()` keep the legacy `node-maxmind` error behavior.
 
 `open()` accepts the existing `node-maxmind` options:
