@@ -123,12 +123,14 @@ Create compiled path lookups once and reuse them in hot paths. `reader.path()`
 parses and stores the path, and the returned `PathLookup` avoids reparsing the
 path array on each lookup.
 
-For high-volume lookup workloads, prefer `getMany()`, `getManyPath()`, or
-`getManyPaths()` when you can batch IPs. They cross the native boundary once
-for the whole batch and are significantly faster than calling `get()` in a
-JavaScript loop. `getPaths()` and `getManyPaths()` perform one database lookup
-per IP and return projected values in the same order as the requested paths;
-missing paths are returned as `null`.
+For high-volume projected lookups, prefer `getManyPath()`, `getManyPaths()`,
+or a compiled path's `getMany()` when you can batch IPs. They cross the native
+boundary once for the whole batch and are faster than calling `getPath()` in a
+JavaScript loop. `getMany()` returns full records and is not faster than
+calling `get()` in a loop, so use it for convenience rather than speed.
+`getPaths()` and `getManyPaths()` perform one database lookup per IP and return
+projected values in the same order as the requested paths; missing paths are
+returned as `null`.
 
 `networks()` and `within()` return lazy iterators backed by native cursors.
 Use `networksPath()` or `withinPath()` to decode only a selected field while
@@ -180,9 +182,9 @@ single-record lookup throughput was still lower:
 
 The same run opened mapped readers in sub-millisecond to low single-digit
 milliseconds after warmup, while `node-maxmind` open times were tens of
-milliseconds and retained tens to hundreds of MB of RSS. Batch lookups were
-faster than JavaScript loops over `get()`, reaching roughly 3.0-3.4M IPs/s in
-that run.
+milliseconds and retained tens to hundreds of MB of RSS. Batch path lookups
+were faster than JavaScript loops over `getPath()`, while `getMany()` was not
+faster than a loop over `get()`.
 
 Run local benchmarks with:
 

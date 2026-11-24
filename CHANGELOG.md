@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- `getMany()`, `getManyPath()`, `getManyPaths()`, compiled path `getMany()`,
+  and network page reads now release temporary JavaScript handles as they go
+  instead of holding them until the call returns, which makes large uncached
+  batches faster and lowers their memory use.
+- Corrected the README, which said `getMany()` was significantly faster than
+  calling `get()` in a loop. Batch path lookups are faster than their loops;
+  `getMany()` is not.
+
 ### Fixed
 
 - `validate()` now returns `false` for IPv6 addresses with a zone identifier,

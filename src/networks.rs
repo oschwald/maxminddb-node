@@ -5,13 +5,14 @@ use crate::{
         JsDecodeEnvGuard,
     },
     errors::{lookup_error, napi_error},
+    VALUES_PER_HANDLE_SCOPE,
 };
 use arrayvec::ArrayString;
 use maxminddb::{
     LookupResult, MaxMindDbError, Mmap, Reader as MaxMindReader, Within, WithinOptions,
 };
 use napi::{
-    bindgen_prelude::{Env, ToNapiValue, Unknown},
+    bindgen_prelude::{Array, Env, ToNapiValue, Unknown},
     Result,
 };
 use rustc_hash::FxHashMap;
@@ -52,7 +53,7 @@ impl<'de> NetworkIter<'de> {
         &mut self,
         env: &'env Env,
         guard: &JsDecodeEnvGuard<'_>,
-        records_by_offset: &mut Option<FxHashMap<usize, Unknown<'env>>>,
+        records_by_offset: &mut Option<PageRecords<'env>>,
         path: Option<&[maxminddb::PathElement<'_>]>,
     ) -> Result<Option<Unknown<'env>>> {
         dispatch_network_iter!(self, iter => {
@@ -60,6 +61,45 @@ impl<'de> NetworkIter<'de> {
                 .map(|result| network_lookup_to_js(env, result, guard, records_by_offset, path))
                 .transpose()
         })
+    }
+}
+
+/// Records decoded earlier in the current page, keyed by data-section offset,
+/// so networks that share a record also share one JavaScript value.
+///
+/// Networks are converted inside short-lived handle scopes, so a record's
+/// handle does not outlive the scope that decoded it. The records are therefore
+/// kept alive in `values`, a JavaScript array created outside those scopes,
+/// and `indexes` maps each offset to the record's position in it.
+pub(crate) struct PageRecords<'env> {
+    indexes: FxHashMap<usize, u32>,
+    values: Array<'env>,
+}
+
+impl<'env> PageRecords<'env> {
+    fn new(env: &'env Env) -> Result<Self> {
+        Ok(Self {
+            indexes: FxHashMap::default(),
+            values: env.create_array(0)?,
+        })
+    }
+
+    fn get(&self, offset: usize) -> Result<Option<Unknown<'env>>> {
+        let Some(&index) = self.indexes.get(&offset) else {
+            return Ok(None);
+        };
+        self.values
+            .get::<Unknown<'env>>(index)?
+            .map(Some)
+            .ok_or_else(|| napi_error("cached network record is missing"))
+    }
+
+    fn insert(&mut self, offset: usize, record: Unknown<'env>) -> Result<()> {
+        let index = u32::try_from(self.indexes.len())
+            .map_err(|_| napi_error("page record count exceeds u32 range"))?;
+        self.values.set(index, record)?;
+        self.indexes.insert(offset, index);
+        Ok(())
     }
 }
 
@@ -78,7 +118,7 @@ fn network_lookup_to_js<'env, 'de, S: AsRef<[u8]>>(
     env: &'env Env,
     result: std::result::Result<LookupResult<'de, S>, MaxMindDbError>,
     guard: &JsDecodeEnvGuard<'_>,
-    records_by_offset: &mut Option<FxHashMap<usize, Unknown<'env>>>,
+    records_by_offset: &mut Option<PageRecords<'env>>,
     path: Option<&[maxminddb::PathElement<'_>]>,
 ) -> Result<Unknown<'env>> {
     let lookup = result.map_err(lookup_error)?;
@@ -90,11 +130,11 @@ fn network_lookup_to_js<'env, 'de, S: AsRef<[u8]>>(
     let record = if let (Some(records_by_offset), Some(offset)) =
         (records_by_offset.as_mut(), lookup.offset())
     {
-        if let Some(record) = records_by_offset.get(&offset) {
-            *record
+        if let Some(record) = records_by_offset.get(offset)? {
+            record
         } else {
             let record = network_record_to_js(env, &lookup, guard, path)?;
-            records_by_offset.insert(offset, record);
+            records_by_offset.insert(offset, record)?;
             record
         }
     } else {
@@ -115,18 +155,32 @@ pub(crate) fn collect_next_networks_page_to_js<'env, 'de>(
     path: Option<&[maxminddb::PathElement<'_>]>,
 ) -> Result<(Unknown<'env>, bool)> {
     let mut records = env.create_array(0)?;
-    let mut records_by_offset = cache_records.then(FxHashMap::default);
+    let mut records_by_offset = cache_records.then(|| PageRecords::new(env)).transpose()?;
     let guard = JsDecodeEnvGuard::enter(env.raw(), property_names);
     let mut count: u32 = 0;
-    for _ in 0..limit {
-        let Some(record) = iter.next_record_to_js(env, &guard, &mut records_by_offset, path)?
-        else {
-            break;
-        };
-        records.set(count, record)?;
-        count = count
-            .checked_add(1)
-            .ok_or_else(|| napi_error("page size exceeds u32 range"))?;
+    let mut remaining = limit;
+    let mut exhausted = false;
+    // Release the handles of converted networks once their pairs are stored in
+    // `records`, so large pages do not keep every intermediate handle alive
+    // until the call returns.
+    while remaining > 0 && !exhausted {
+        let chunk = remaining.min(VALUES_PER_HANDLE_SCOPE);
+        remaining -= chunk;
+        env.run_in_scope(|| {
+            for _ in 0..chunk {
+                let Some(record) =
+                    iter.next_record_to_js(env, &guard, &mut records_by_offset, path)?
+                else {
+                    exhausted = true;
+                    break;
+                };
+                records.set(count, record)?;
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| napi_error("page size exceeds u32 range"))?;
+            }
+            Ok(())
+        })?;
     }
     let is_empty = count == 0;
     Ok((records.into_unknown(env)?, is_empty))
