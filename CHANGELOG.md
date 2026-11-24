@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files (`skipLibCheck: false`) no longer fail on `Buffer` or `Symbol.dispose`
   without extra compiler options. `@types/node` (20 or newer) is now an
   optional peer dependency, and TypeScript 5.2 or newer is required.
+- Readers that hold the database in native memory (`new Reader(buffer)`,
+  `MODE_MEMORY`, and `MODE_BUFFER`) now report that memory to V8, so readers
+  dropped without `close()` are garbage collected before memory runs out.
 
 ## [0.5.0] - 2026-11-21
 

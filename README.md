@@ -165,6 +165,13 @@ Mode tradeoffs:
   memory. They cost more memory at open time but are independent of the source
   file after open.
 
+Readers built with `new Reader(buffer)` or opened with `MODE_MEMORY` or
+`MODE_BUFFER` copy the whole database into native memory and report that size
+to V8, so unreferenced readers are collected in time. The memory is still held
+until the reader is garbage collected. Call `reader.close()` when you are done
+with a reader to free it right away. Open network iterators keep the database
+alive until they finish or are closed.
+
 ## Performance Notes
 
 Performance depends on database size, record shape, cache hit rate, CPU, Node

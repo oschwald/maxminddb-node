@@ -36,8 +36,9 @@ use std::{
     io::Read,
     net::IpAddr,
     num::NonZeroUsize,
+    ops::Deref,
     path::Path,
-    sync::Arc,
+    rc::Rc,
 };
 
 const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
@@ -47,16 +48,72 @@ const ERR_GZIP_DB: &str =
 
 enum ReaderSource {
     Mmap(MaxMindReader<Mmap>),
-    Memory(MaxMindReader<Vec<u8>>),
+    /// A database copied onto the Rust heap, with the size of its allocation.
+    Memory(MaxMindReader<Vec<u8>>, usize),
 }
 
 macro_rules! dispatch_reader {
     ($source:expr, $reader:ident => $body:expr) => {
         match $source {
             ReaderSource::Mmap($reader) => $body,
-            ReaderSource::Memory($reader) => $body,
+            ReaderSource::Memory($reader, _) => $body,
         }
     };
+}
+
+/// Native memory reported to V8 with `napi_adjust_external_memory`, so the
+/// garbage collector sees the true cost of a small JavaScript object that owns
+/// a large native allocation. Dropping it reverses the adjustment.
+///
+/// It keeps the `Env` it was created with, so it must be dropped on that
+/// environment's JavaScript thread. Owners share it through `Rc`, which keeps
+/// it on that thread.
+struct ExternalMemory {
+    env: Env,
+    bytes: i64,
+}
+
+impl ExternalMemory {
+    fn report(env: &Env, bytes: usize) -> Option<Self> {
+        let bytes = i64::try_from(bytes).ok().filter(|&bytes| bytes > 0)?;
+        // The adjustment is only a hint to the garbage collector. If it fails,
+        // keep the reader usable and skip the matching release.
+        env.adjust_external_memory(bytes).ok()?;
+        Some(Self { env: *env, bytes })
+    }
+}
+
+impl Drop for ExternalMemory {
+    fn drop(&mut self) {
+        let _ = self.env.adjust_external_memory(-self.bytes);
+    }
+}
+
+/// A reader source shared by a `NativeReader` and the network cursors created
+/// from it. The last owner to drop it frees the database and releases any
+/// external memory it reported.
+struct SharedSource {
+    source: ReaderSource,
+    // Declared after `source`, so the database is freed before V8 is told.
+    _external_memory: Option<ExternalMemory>,
+}
+
+impl SharedSource {
+    fn new(env: &Env, source: ReaderSource) -> Rc<Self> {
+        let external_memory = ExternalMemory::report(env, source.heap_bytes());
+        Rc::new(Self {
+            source,
+            _external_memory: external_memory,
+        })
+    }
+}
+
+impl Deref for SharedSource {
+    type Target = ReaderSource;
+
+    fn deref(&self) -> &ReaderSource {
+        &self.source
+    }
 }
 
 pub struct OpenReaderTask {
@@ -75,17 +132,17 @@ impl Task for OpenReaderTask {
         open_source(&self.path, Some(&self.mode)).map(OpenReaderOutput)
     }
 
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(create_reader(output.0, self.cache_capacity))
+    fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(create_reader(&env, output.0, self.cache_capacity))
     }
 }
 
-// The network iterator borrows from its reader. Keep the Arc-owned reader and
+// The network iterator borrows from its reader. Keep the Rc-owned reader and
 // the borrowing iterator together so cursor snapshots remain valid after the
 // parent reader reloads or closes.
 self_cell::self_cell!(
     struct NetworkCursorCell {
-        owner: Arc<ReaderSource>,
+        owner: Rc<SharedSource>,
 
         #[covariant]
         dependent: NetworkIter,
@@ -93,6 +150,15 @@ self_cell::self_cell!(
 );
 
 impl ReaderSource {
+    /// Bytes this source holds on the Rust heap. Memory-mapped databases are
+    /// backed by the file and are not counted.
+    fn heap_bytes(&self) -> usize {
+        match self {
+            ReaderSource::Mmap(_) => 0,
+            ReaderSource::Memory(_, bytes) => *bytes,
+        }
+    }
+
     fn lookup_record_to_js<'env>(
         &self,
         env: &'env Env,
@@ -161,7 +227,7 @@ impl ReaderSource {
     ) -> std::result::Result<NetworkIter<'_>, MaxMindDbError> {
         match self {
             ReaderSource::Mmap(reader) => NetworkIter::from_mmap(reader, cidr, options),
-            ReaderSource::Memory(reader) => NetworkIter::from_memory(reader, cidr, options),
+            ReaderSource::Memory(reader, _) => NetworkIter::from_memory(reader, cidr, options),
         }
     }
 }
@@ -172,7 +238,7 @@ pub struct NativeReader {
 }
 
 struct NativeReaderState {
-    reader: Option<Arc<ReaderSource>>,
+    reader: Option<Rc<SharedSource>>,
     cache: Option<RecordCache>,
     property_names: PropertyNameCache,
     paths: HashMap<u32, Vec<OwnedPathElement>>,
@@ -232,8 +298,9 @@ impl NativeNetworkCursor {
 #[napi]
 impl NativeReader {
     #[napi(constructor)]
-    pub fn new(database: Buffer, cache_capacity: Option<u32>) -> Result<Self> {
-        Self::from_bytes(database.as_ref().to_vec(), cache_capacity)
+    pub fn new(env: Env, database: Buffer, cache_capacity: Option<u32>) -> Result<Self> {
+        let source = memory_source(database.as_ref().to_vec())?;
+        Ok(create_reader(&env, source, cache_capacity))
     }
 
     #[napi]
@@ -241,7 +308,7 @@ impl NativeReader {
         if self.state()?.reader.is_none() {
             return Err(invalid_arg(ERR_CLOSED_DB));
         }
-        let new_reader = Self::reader_from_bytes(database.as_ref().to_vec())?;
+        let new_reader = memory_source(database.as_ref().to_vec())?;
         self.replace_reader(env, new_reader)
     }
 
@@ -501,7 +568,7 @@ impl NativeReader {
             skip_empty_values,
         );
         let state = self.state()?;
-        let reader = Arc::clone(
+        let reader = Rc::clone(
             state
                 .reader
                 .as_ref()
@@ -529,15 +596,6 @@ impl NativeReader {
 }
 
 impl NativeReader {
-    fn from_bytes(bytes: Vec<u8>, cache_capacity: Option<u32>) -> Result<Self> {
-        let source = Self::reader_from_bytes(bytes)?;
-        Ok(create_reader(source, cache_capacity))
-    }
-
-    fn reader_from_bytes(bytes: Vec<u8>) -> Result<ReaderSource> {
-        reader_from_bytes(bytes).map(ReaderSource::Memory)
-    }
-
     fn parse_lookup_ips(&self, env: &Env, ips: &Array<'_>) -> Result<Vec<IpAddr>> {
         (0..ips.len())
             .map(|index| {
@@ -594,7 +652,7 @@ impl NativeReaderState {
         self.clear_record_cache(env)?;
         self.clear_property_names();
         self.ip_version = new_reader.metadata().ip_version;
-        self.reader = Some(Arc::new(new_reader));
+        self.reader = Some(SharedSource::new(env, new_reader));
         Ok(())
     }
 
@@ -654,11 +712,12 @@ impl ObjectFinalize for NativeReader {
 
 #[napi(js_name = "openReader")]
 pub fn open_reader(
+    env: Env,
     path: String,
     mode: Option<String>,
     cache_capacity: Option<u32>,
 ) -> Result<NativeReader> {
-    open_source(&path, mode.as_deref()).map(|source| create_reader(source, cache_capacity))
+    open_source(&path, mode.as_deref()).map(|source| create_reader(&env, source, cache_capacity))
 }
 
 #[napi(js_name = "openReaderAsync")]
@@ -679,13 +738,13 @@ pub fn native_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-fn create_reader(source: ReaderSource, cache_capacity: Option<u32>) -> NativeReader {
+fn create_reader(env: &Env, source: ReaderSource, cache_capacity: Option<u32>) -> NativeReader {
     let ip_version = source.metadata().ip_version;
     let cache = cache_capacity
         .and_then(|capacity| NonZeroUsize::new(capacity as usize))
         .map(RecordCache::new);
     let state = NativeReaderState {
-        reader: Some(Arc::new(source)),
+        reader: Some(SharedSource::new(env, source)),
         cache,
         property_names: PropertyNameCache::new(),
         paths: HashMap::new(),
@@ -700,7 +759,7 @@ fn create_reader(source: ReaderSource, cache_capacity: Option<u32>) -> NativeRea
 fn open_source(path: &str, mode: Option<&str>) -> Result<ReaderSource> {
     match mode.unwrap_or("mmap") {
         "auto" | "mmap" => open_mmap_reader(Path::new(path)).map(ReaderSource::Mmap),
-        "memory" | "buffer" => open_memory_reader(Path::new(path)).map(ReaderSource::Memory),
+        "memory" | "buffer" => open_memory_reader(Path::new(path)),
         other => Err(invalid_arg(format!("Unsupported open mode: {other}"))),
     }
 }
@@ -718,7 +777,7 @@ fn open_mmap_reader(path: &Path) -> Result<MaxMindReader<Mmap>> {
     MaxMindReader::from_source(mmap).map_err(open_error)
 }
 
-fn open_memory_reader(path: &Path) -> Result<MaxMindReader<Vec<u8>>> {
+fn open_memory_reader(path: &Path) -> Result<ReaderSource> {
     let mut file = File::open(path)
         .map_err(MaxMindDbError::Io)
         .map_err(open_error)?;
@@ -746,12 +805,14 @@ fn open_memory_reader(path: &Path) -> Result<MaxMindReader<Vec<u8>>> {
     file.read_to_end(&mut bytes)
         .map_err(MaxMindDbError::Io)
         .map_err(open_error)?;
-    reader_from_bytes(bytes)
+    memory_source(bytes)
 }
 
-fn reader_from_bytes(bytes: Vec<u8>) -> Result<MaxMindReader<Vec<u8>>> {
+fn memory_source(bytes: Vec<u8>) -> Result<ReaderSource> {
     reject_gzip(&bytes)?;
-    MaxMindReader::from_source(bytes).map_err(open_error)
+    let heap_bytes = bytes.capacity();
+    let reader = MaxMindReader::from_source(bytes).map_err(open_error)?;
+    Ok(ReaderSource::Memory(reader, heap_bytes))
 }
 
 fn reject_gzip(bytes: &[u8]) -> Result<()> {
