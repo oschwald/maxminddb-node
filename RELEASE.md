@@ -74,13 +74,14 @@ Before the first publish, configure the package on npmjs.com:
 - Workflow filename: `publish.yml`
 - Allowed action: `npm publish`
 
-The workflow uses Node 24 and upgrades npm before publishing so the npm CLI
-meets trusted publishing requirements. It builds native modules on hosted
-Linux, macOS, and Windows runners, smoke-tests that each native module loads on
-its build runner, downloads those artifacts into the package root, runs the same
-validation as CI, and verifies the package with `npm pack --dry-run`. GitHub
-release events then run `npm publish`. Manual `workflow_dispatch` runs are
-validation-only unless the `publish` input is set to `true`.
+The workflow uses Node 24 and publishes with the npm it bundles. Trusted
+publishing needs npm 11.5.1 or newer, which every Node release from 24.5.0 on
+includes. It builds native modules on hosted Linux, macOS, and Windows runners,
+smoke-tests that each native module loads on its build runner, downloads those
+artifacts into the package root, runs the same validation as CI, and verifies
+the package with `npm pack --dry-run`. GitHub release events then run
+`npm publish`. Manual `workflow_dispatch` runs are validation-only unless the
+`publish` input is set to `true`.
 
 ## Release Checklist
 
@@ -91,3 +92,7 @@ validation-only unless the `publish` input is set to `true`.
    available.
 5. Verify the `build-binaries` matrix completed for every supported target
    before the `publish` job runs `npm publish`.
+
+The test data comes from `oschwald/maxminddb-rust`, pinned to one commit in
+`ci.yml` and `publish.yml`. Dependabot does not update that pin. To pick up new
+test databases, change the `ref` in both workflows in one commit.
