@@ -100,6 +100,67 @@ if (typeof maxminddb.open !== 'function') {
     ],
     { cwd: tmpdir }
   );
+
+  // Typecheck a separate consumer project against the packed declarations
+  // with library checking on and no ambient types, so the published
+  // index.d.ts has to pull in everything it needs by itself. The consumer
+  // gets the locked @types/node (an optional peer dependency) copied from
+  // this checkout, so the check needs no network and stays reproducible.
+  const rootModules = path.join(root, 'node_modules');
+  const consumerModules = path.join(tmpdir, 'node_modules');
+  const typesNodeDeps = Object.keys(
+    require(path.join(rootModules, '@types/node/package.json')).dependencies ??
+      {}
+  );
+  for (const dep of ['@types/node', ...typesNodeDeps]) {
+    fs.cpSync(path.join(rootModules, dep), path.join(consumerModules, dep), {
+      recursive: true,
+    });
+  }
+
+  fs.writeFileSync(
+    path.join(tmpdir, 'tsconfig.json'),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          module: 'nodenext',
+          moduleResolution: 'nodenext',
+          target: 'es2022',
+          strict: true,
+          skipLibCheck: false,
+          types: [],
+          noEmit: true,
+        },
+        files: ['consumer.ts'],
+      },
+      null,
+      2
+    )
+  );
+  fs.writeFileSync(
+    path.join(tmpdir, 'consumer.ts'),
+    `import maxminddb = require(${packageNameLiteral});
+
+export async function lookup(file: string): Promise<string | undefined> {
+  const reader = await maxminddb.open<maxminddb.CityResponse>(file);
+  return reader.get('8.8.8.8')?.country?.iso_code;
+}
+
+export function lookupInBuffer(
+  database: Parameters<maxminddb.Reader['load']>[0],
+): boolean {
+  using reader = new maxminddb.Reader(database);
+  return reader.get('8.8.8.8') !== null;
+}
+`
+  );
+
+  const tscPath = path.join(
+    path.dirname(require.resolve('typescript/package.json', { paths: [root] })),
+    'bin',
+    'tsc'
+  );
+  execFile(process.execPath, [tscPath, '-p', tmpdir], { cwd: tmpdir });
 } finally {
   if (tarball) {
     fs.rmSync(tarball, { force: true });

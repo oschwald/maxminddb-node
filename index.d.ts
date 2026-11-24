@@ -1,3 +1,6 @@
+/// <reference types="node" />
+/// <reference lib="esnext.disposable" />
+
 declare namespace maxmind {
   export type Names = {
     readonly de?: string;
