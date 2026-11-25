@@ -419,6 +419,7 @@ class Reader {
     this._watchReloadPending = false;
     this._watchReloadPromise = Promise.resolve();
     this._lastReloadError = null;
+    this._reloadOutcomeSequence = 0;
     this._cacheCapacity = normalizeCacheCapacity(options);
     this._reader = new native.NativeReader(database, this._cacheCapacity);
     this._get = this._reader.bindGet();
@@ -437,16 +438,18 @@ class Reader {
   }
 
   static async openOwned(filepath, mode, options = {}) {
-    return Reader._fromNative(
-      filepath,
-      mode,
-      options,
-      await native.openReaderAsync(
+    let nativeReader;
+    try {
+      nativeReader = await native.openReaderAsync(
         filepath,
         mode,
         normalizeCacheCapacity(options)
-      )
-    );
+      );
+    } catch (error) {
+      takeReadSequence(error);
+      throw error;
+    }
+    return Reader._fromNative(filepath, mode, options, nativeReader);
   }
 
   static _fromNative(filepath, mode, options, nativeReader) {
@@ -459,6 +462,7 @@ class Reader {
     reader._watchReloadPending = false;
     reader._watchReloadPromise = Promise.resolve();
     reader._lastReloadError = null;
+    reader._reloadOutcomeSequence = 0;
     reader._cacheCapacity = normalizeCacheCapacity(options);
     reader._reader = nativeReader;
     reader._get = nativeReader.bindGet();
@@ -479,12 +483,13 @@ class Reader {
     if (this.closed) {
       throw new Error('Cannot load into a closed Reader');
     }
+    const startSequence = native.currentReadSequence();
     try {
       this._reader.load(database);
       this.metadata = normalizeMetadata(this._reader.metadata());
-      this._lastReloadError = null;
+      this._recordReloadSuccess(this._reader.readSequence);
     } catch (error) {
-      this._lastReloadError = error;
+      this._recordReloadFailure(startSequence + 0.5, error);
       throw error;
     }
   }
@@ -496,16 +501,21 @@ class Reader {
     if (this.closed) {
       throw new Error('Cannot reload a closed Reader');
     }
+    const startSequence = native.currentReadSequence();
     try {
       this._reader.reloadFromFile(this._filepath, this._mode);
       this.metadata = normalizeMetadata(this._reader.metadata());
-      this._lastReloadError = null;
+      this._recordReloadSuccess(this._reader.readSequence);
     } catch (error) {
-      this._lastReloadError = error;
+      this._recordReloadFailure(startSequence + 0.5, error);
       throw error;
     }
   }
 
+  // Resolves to true when the replacement was installed. If the installed
+  // database was read after this call read its file (by load(), reload(),
+  // another reloadAsync(), or a watched reload), the replacement is closed
+  // and the promise resolves to false without changing the reader.
   async reloadAsync() {
     if (!this._filepath) {
       throw new Error('Cannot reload a buffer-backed Reader');
@@ -513,23 +523,27 @@ class Reader {
     if (this.closed) {
       throw new Error('Cannot reload a closed Reader');
     }
+    const startSequence = native.currentReadSequence();
     let replacement;
     try {
-      replacement = await native.openReaderAsync(
+      replacement = await this._openReplacementAsync(
         this._filepath,
-        this._mode,
-        this._cacheCapacity
+        this._mode
       );
     } catch (error) {
       if (this.closed) {
         throw new Error('Cannot reload a closed Reader');
       }
-      this._lastReloadError = error;
+      this._recordReloadFailure(startSequence + 0.5, error);
       throw error;
     }
     if (this.closed) {
       replacement.close();
       throw new Error('Cannot reload a closed Reader');
+    }
+    if (this._isSuperseded(replacement)) {
+      replacement.close();
+      return false;
     }
     try {
       this._replaceNativeReader(replacement);
@@ -540,9 +554,44 @@ class Reader {
       if (this.closed) {
         throw new Error('Cannot reload a closed Reader');
       }
-      this._lastReloadError = error;
+      this._recordReloadFailure(replacement.readSequence, error);
       throw error;
     }
+    return true;
+  }
+
+  // Reloads are ordered by the native read sequence, a process-wide counter
+  // taken when each database file is opened or buffer loaded.
+  //
+  // _isSuperseded() is true when the installed database was read after the
+  // replacement, so installing it would roll the reader back.
+  _isSuperseded(replacement) {
+    return this._reader.readSequence > replacement.readSequence;
+  }
+
+  // lastReloadError reflects whichever outcome is newest in read order. A
+  // success counts from when its database was read. A failure counts from
+  // its failed read when the native layer reports one (error.readSequence),
+  // from the replacement's read when installing a replacement fails, and
+  // otherwise from just after the sequence current when its attempt began,
+  // so it supersedes every read that began before the attempt.
+  _recordReloadSuccess(readSequence) {
+    if (readSequence > this._reloadOutcomeSequence) {
+      this._reloadOutcomeSequence = readSequence;
+      this._lastReloadError = null;
+    }
+  }
+
+  _recordReloadFailure(fallbackSequence, error) {
+    const sequence = takeReadSequence(error) ?? fallbackSequence;
+    if (sequence >= this._reloadOutcomeSequence) {
+      this._reloadOutcomeSequence = sequence;
+      this._lastReloadError = error;
+    }
+  }
+
+  _openReplacementAsync(filepath, mode) {
+    return native.openReaderAsync(filepath, mode, this._cacheCapacity);
   }
 
   _replaceNativeReader(replacement) {
@@ -552,8 +601,8 @@ class Reader {
     this._reader = replacement;
     this._get = get;
     this.metadata = metadata;
-    this._lastReloadError = null;
     previous.close();
+    this._recordReloadSuccess(replacement.readSequence);
   }
 
   close() {
@@ -602,11 +651,13 @@ class Reader {
 
     let reloaded = false;
     let replacement;
+    let startSequence = native.currentReadSequence();
     try {
       if (!(await waitForFile(filepath, isStale))) {
         if (!isStale()) {
-          this._lastReloadError = new Error(
-            `Database file not found: ${filepath}`
+          this._recordReloadFailure(
+            startSequence + 0.5,
+            new Error(`Database file not found: ${filepath}`)
           );
         }
         return;
@@ -615,12 +666,9 @@ class Reader {
         return;
       }
 
-      replacement = await native.openReaderAsync(
-        filepath,
-        mode,
-        this._cacheCapacity
-      );
-      if (isStale()) {
+      startSequence = native.currentReadSequence();
+      replacement = await this._openReplacementAsync(filepath, mode);
+      if (isStale() || this._isSuperseded(replacement)) {
         replacement.close();
         return;
       }
@@ -632,7 +680,10 @@ class Reader {
         replacement.close();
       }
       if (!isStale()) {
-        this._lastReloadError = error;
+        this._recordReloadFailure(
+          replacement ? replacement.readSequence : startSequence + 0.5,
+          error
+        );
       }
     }
 
@@ -754,6 +805,17 @@ function init() {
 
 function openSync() {
   throw new Error(legacyErrorMessage);
+}
+
+// Native read failures carry the failed read's sequence as readSequence.
+// Returns it and removes the property so it never reaches callers.
+function takeReadSequence(error) {
+  if (error === null || typeof error !== 'object') {
+    return undefined;
+  }
+  const sequence = error.readSequence;
+  delete error.readSequence;
+  return typeof sequence === 'number' ? sequence : undefined;
 }
 
 function emitHookWarning(error) {

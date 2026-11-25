@@ -929,6 +929,355 @@ test('keeps the existing reader after an asynchronous reload failure', async () 
   }
 });
 
+// Holds the result of each asynchronous replacement open until the test
+// releases it, so tests can control the order in which overlapping reloads
+// finish. The database file is still read as soon as the open starts.
+function holdReplacementOpens(reader) {
+  const original = reader._openReplacementAsync;
+  const held = [];
+  reader._openReplacementAsync = function (...args) {
+    const opened = original.apply(this, args);
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    held.push({ opened, release });
+    return opened.then(
+      async (value) => {
+        await gate;
+        return value;
+      },
+      async (error) => {
+        await gate;
+        throw error;
+      }
+    );
+  };
+  return held;
+}
+
+// Delays each asynchronous replacement open, so its file is not read until
+// the test releases it.
+function deferReplacementReads(reader) {
+  const original = reader._openReplacementAsync;
+  const deferred = [];
+  reader._openReplacementAsync = function (...args) {
+    return new Promise((resolve) => {
+      deferred.push(resolve);
+    }).then(() => original.apply(this, args));
+  };
+  return deferred;
+}
+
+async function waitForHeldOpens(held, count) {
+  for (let attempt = 0; held.length < count; attempt += 1) {
+    if (attempt >= 1000) {
+      throw new Error(`expected ${count} replacement opens, saw ${held.length}`);
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+const staleReloadModes = [
+  maxmind.MODE_MMAP,
+  maxmind.MODE_MEMORY,
+  maxmind.MODE_BUFFER,
+];
+const cityPath = path.join(dataDir, 'GeoIP2-City-Test.mmdb');
+const countryPath = path.join(dataDir, 'GeoIP2-Country-Test.mmdb');
+
+test('discards an older reloadAsync after a newer reload', async () => {
+  for (const mode of staleReloadModes) {
+    const reader = await maxmind.open(cityPath, { mode });
+    try {
+      const held = holdReplacementOpens(reader);
+      const pending = reader.reloadAsync();
+      const stale = await held[0].opened;
+
+      reader._filepath = countryPath;
+      reader.reload();
+      assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+
+      held[0].release();
+      assert.equal(await pending, false);
+
+      assert.equal(stale.closed, true);
+      assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+      assert.equal(reader.get('81.2.69.142').country.iso_code, 'GB');
+      assert.equal(reader.get('81.2.69.142').city, undefined);
+      assert.equal(reader.lastReloadError, null);
+    } finally {
+      reader.close();
+    }
+  }
+});
+
+test('discards an older reloadAsync that finishes after a newer one', async () => {
+  for (const mode of staleReloadModes) {
+    const reader = await maxmind.open(cityPath, { mode });
+    try {
+      const held = holdReplacementOpens(reader);
+      const older = reader.reloadAsync();
+      const stale = await held[0].opened;
+
+      reader._filepath = countryPath;
+      const newer = reader.reloadAsync();
+      const fresh = await held[1].opened;
+
+      held[1].release();
+      assert.equal(await newer, true);
+      assert.strictEqual(reader._reader, fresh);
+
+      held[0].release();
+      assert.equal(await older, false);
+
+      assert.equal(stale.closed, true);
+      assert.strictEqual(reader._reader, fresh);
+      assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+      assert.equal(reader.lastReloadError, null);
+    } finally {
+      reader.close();
+    }
+  }
+});
+
+test('installs an older reloadAsync before a newer one finishes', async () => {
+  const reader = await maxmind.open(countryPath, { mode: maxmind.MODE_MEMORY });
+  try {
+    const held = holdReplacementOpens(reader);
+    reader._filepath = cityPath;
+    const older = reader.reloadAsync();
+    await held[0].opened;
+    reader._filepath = countryPath;
+    const newer = reader.reloadAsync();
+    await held[1].opened;
+
+    held[0].release();
+    assert.equal(await older, true);
+    assert.equal(reader.metadata.databaseType, 'GeoIP2-City');
+
+    held[1].release();
+    assert.equal(await newer, true);
+    assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+    assert.equal(reader.lastReloadError, null);
+  } finally {
+    reader.close();
+  }
+});
+
+test('installs a reloadAsync that reads its file after a newer reload', async () => {
+  for (const mode of staleReloadModes) {
+    const reader = await maxmind.open(cityPath, { mode });
+    try {
+      const deferred = deferReplacementReads(reader);
+      reader._filepath = countryPath;
+      const pending = reader.reloadAsync();
+
+      reader._filepath = cityPath;
+      reader.reload();
+      assert.equal(reader.metadata.databaseType, 'GeoIP2-City');
+
+      deferred[0]();
+      assert.equal(await pending, true);
+
+      assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+      assert.equal(reader.lastReloadError, null);
+    } finally {
+      reader.close();
+    }
+  }
+});
+
+test('discards an older reloadAsync after a newer load', async () => {
+  const countryBuffer = fs.readFileSync(countryPath);
+  for (const mode of staleReloadModes) {
+    const reader = await maxmind.open(cityPath, { mode });
+    try {
+      const held = holdReplacementOpens(reader);
+      const pending = reader.reloadAsync();
+      const stale = await held[0].opened;
+
+      reader.load(countryBuffer);
+
+      held[0].release();
+      assert.equal(await pending, false);
+
+      assert.equal(stale.closed, true);
+      assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+      assert.equal(reader.lastReloadError, null);
+    } finally {
+      reader.close();
+    }
+  }
+});
+
+test('does not record a superseded reloadAsync failure', async () => {
+  const reader = await maxmind.open(cityPath, { mode: maxmind.MODE_MEMORY });
+  try {
+    const held = holdReplacementOpens(reader);
+    reader._filepath = path.join(dataDir, 'does-not-exist.mmdb');
+    const pending = reader.reloadAsync();
+    await assert.rejects(() => held[0].opened);
+
+    reader._filepath = countryPath;
+    reader.reload();
+
+    held[0].release();
+    await assert.rejects(() => pending);
+
+    assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+    assert.equal(reader.lastReloadError, null);
+  } finally {
+    reader.close();
+  }
+});
+
+test('records a reloadAsync failure that reads after a newer reload', async () => {
+  const reader = await maxmind.open(cityPath, { mode: maxmind.MODE_MEMORY });
+  try {
+    const deferred = deferReplacementReads(reader);
+    reader._filepath = path.join(dataDir, 'does-not-exist.mmdb');
+    const pending = reader.reloadAsync();
+
+    reader._filepath = countryPath;
+    reader.reload();
+    assert.equal(reader.lastReloadError, null);
+
+    deferred[0]();
+    const error = await pending.then(
+      () => assert.fail('expected reloadAsync to reject'),
+      (rejection) => rejection
+    );
+
+    assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+    assert.strictEqual(reader.lastReloadError, error);
+    assert.equal(Object.hasOwn(error, 'readSequence'), false);
+
+    reader._filepath = path.join(dataDir, 'does-not-exist.mmdb');
+    assert.throws(
+      () => reader.reload(),
+      (thrown) => !Object.hasOwn(thrown, 'readSequence')
+    );
+    await assert.rejects(
+      () => maxmind.open(reader._filepath, { mode: maxmind.MODE_MEMORY }),
+      (thrown) => !Object.hasOwn(thrown, 'readSequence')
+    );
+  } finally {
+    reader.close();
+  }
+});
+
+test('keeps a newer reload failure after an older reloadAsync succeeds', async () => {
+  const reader = await maxmind.open(cityPath, { mode: maxmind.MODE_MEMORY });
+  try {
+    const held = holdReplacementOpens(reader);
+    reader._filepath = countryPath;
+    const pending = reader.reloadAsync();
+    await held[0].opened;
+
+    reader._filepath = path.join(dataDir, 'does-not-exist.mmdb');
+    assert.throws(() => reader.reload());
+    const newerError = reader.lastReloadError;
+    assert(newerError instanceof Error);
+
+    held[0].release();
+    assert.equal(await pending, true);
+
+    assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+    assert.strictEqual(reader.lastReloadError, newerError);
+  } finally {
+    reader.close();
+  }
+});
+
+test('clears an earlier failure when a later read installs', async () => {
+  const reader = await maxmind.open(cityPath, { mode: maxmind.MODE_MEMORY });
+  try {
+    const deferred = deferReplacementReads(reader);
+    reader._filepath = countryPath;
+    const pending = reader.reloadAsync();
+
+    reader._filepath = path.join(dataDir, 'does-not-exist.mmdb');
+    assert.throws(() => reader.reload());
+    assert(reader.lastReloadError instanceof Error);
+
+    deferred[0]();
+    assert.equal(await pending, true);
+
+    assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+    assert.equal(reader.lastReloadError, null);
+  } finally {
+    reader.close();
+  }
+});
+
+test('discards an older reloadAsync after a newer watched reload', async () => {
+  const reader = await maxmind.open(cityPath, { mode: maxmind.MODE_MEMORY });
+  try {
+    const held = holdReplacementOpens(reader);
+    const pending = reader.reloadAsync();
+    const stale = await held[0].opened;
+
+    let hookCalls = 0;
+    reader._watchFilepath = countryPath;
+    const watched = reader._reloadWatchedFile(
+      countryPath,
+      maxmind.MODE_MEMORY,
+      () => {
+        hookCalls += 1;
+      }
+    );
+    await waitForHeldOpens(held, 2);
+    await held[1].opened;
+    held[1].release();
+    await watched;
+    assert.equal(hookCalls, 1);
+    assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+
+    held[0].release();
+    assert.equal(await pending, false);
+
+    assert.equal(stale.closed, true);
+    assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+    assert.equal(reader.lastReloadError, null);
+  } finally {
+    reader._watchFilepath = null;
+    reader.close();
+  }
+});
+
+test('discards an older watched reload after a newer reload', async () => {
+  const reader = await maxmind.open(cityPath, { mode: maxmind.MODE_MEMORY });
+  try {
+    const held = holdReplacementOpens(reader);
+    let hookCalls = 0;
+    reader._watchFilepath = cityPath;
+    const watched = reader._reloadWatchedFile(
+      cityPath,
+      maxmind.MODE_MEMORY,
+      () => {
+        hookCalls += 1;
+      }
+    );
+    await waitForHeldOpens(held, 1);
+    const stale = await held[0].opened;
+
+    reader._filepath = countryPath;
+    reader.reload();
+
+    held[0].release();
+    await watched;
+
+    assert.equal(stale.closed, true);
+    assert.equal(hookCalls, 0);
+    assert.equal(reader.metadata.databaseType, 'GeoIP2-Country');
+    assert.equal(reader.lastReloadError, null);
+  } finally {
+    reader._watchFilepath = null;
+    reader.close();
+  }
+});
+
 test('unwatches database files on close', async () => {
   const originalWatchFile = fs.watchFile;
   const originalUnwatchFile = fs.unwatchFile;

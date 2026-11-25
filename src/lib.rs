@@ -23,10 +23,10 @@ use maxminddb::{MaxMindDbError, Mmap, Reader as MaxMindReader, WithinOptions};
 use memmap2::MmapOptions;
 use napi::{
     bindgen_prelude::{
-        Array, AsyncTask, Buffer, Either, Env, Object, ObjectFinalize, Reference, ToNapiValue,
-        Unknown,
+        Array, AsyncTask, Buffer, Either, Env, JsObjectValue, Object, ObjectFinalize, Reference,
+        ToNapiValue, Unknown,
     },
-    JsString, Result, Task,
+    JsString, JsValue, Result, Task,
 };
 use napi_derive::napi;
 use std::{
@@ -39,6 +39,10 @@ use std::{
     ops::Deref,
     path::Path,
     rc::Rc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, PoisonError,
+    },
 };
 
 /// How many batch results or network-page entries to convert before closing
@@ -51,6 +55,56 @@ const ERR_CLOSED_DB: &str = "Attempt to read from a closed MaxMind DB.";
 const ERR_REENTRANT_DB: &str = "MaxMind DB reader is already in use.";
 const ERR_GZIP_DB: &str =
     "Looks like you are passing in a file in gzip format, please use mmdb database instead.";
+
+// Process-wide counter taken when a database read begins (when the file is
+// opened, or when a buffer is loaded). The JavaScript Reader compares these
+// numbers so an asynchronous reload that read its file earlier never replaces
+// a database that was read later.
+static READ_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+// Held across taking a sequence number and opening the file, so sequence
+// order matches the order in which files are opened, and therefore which
+// version of an atomically replaced file each reader sees. Only the open
+// itself runs under the lock; reading and mapping the file do not.
+static OPEN_LOCK: Mutex<()> = Mutex::new(());
+
+fn next_read_sequence() -> u64 {
+    READ_SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+// A database read's result, with the read sequence taken before it failed
+// when the failure happened after the read began.
+type ReadResult<T> = std::result::Result<(T, u64), (napi::Error, Option<u64>)>;
+
+fn open_file_with_sequence(path: &Path) -> ReadResult<File> {
+    let _guard = OPEN_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let read_sequence = next_read_sequence();
+    let file = File::open(path)
+        .map_err(MaxMindDbError::Io)
+        .map_err(|error| (open_error(error), Some(read_sequence)))?;
+    Ok((file, read_sequence))
+}
+
+// Attaches the failed read's sequence to the JavaScript error as
+// `readSequence`, so the Reader can order the failure against other reloads.
+fn error_with_read_sequence(
+    env: &Env,
+    error: napi::Error,
+    read_sequence: Option<u64>,
+) -> napi::Error {
+    let Some(read_sequence) = read_sequence else {
+        return error;
+    };
+    match env.create_error(error) {
+        Ok(mut object) => {
+            // If the property cannot be set, the Reader falls back to ordering
+            // the failure by when the attempt began.
+            let _ = object.set_named_property("readSequence", read_sequence as f64);
+            napi::Error::from(object.to_unknown())
+        }
+        Err(error) => error,
+    }
+}
 
 enum ReaderSource {
     Mmap(MaxMindReader<Mmap>),
@@ -126,20 +180,35 @@ pub struct OpenReaderTask {
     path: String,
     mode: String,
     cache_capacity: Option<u32>,
+    failed_read_sequence: Option<u64>,
 }
 
-pub struct OpenReaderOutput(ReaderSource);
+pub struct OpenReaderOutput(ReaderSource, u64);
 
 impl Task for OpenReaderTask {
     type Output = OpenReaderOutput;
     type JsValue = NativeReader;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        open_source(&self.path, Some(&self.mode)).map(OpenReaderOutput)
+        match open_source(&self.path, Some(&self.mode)) {
+            Ok((source, read_sequence)) => Ok(OpenReaderOutput(source, read_sequence)),
+            Err((error, read_sequence)) => {
+                self.failed_read_sequence = read_sequence;
+                Err(error)
+            }
+        }
     }
 
     fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(create_reader(&env, output.0, self.cache_capacity))
+        Ok(create_reader(&env, output.0, output.1, self.cache_capacity))
+    }
+
+    fn reject(&mut self, env: Env, error: napi::Error) -> Result<Self::JsValue> {
+        Err(error_with_read_sequence(
+            &env,
+            error,
+            self.failed_read_sequence,
+        ))
     }
 }
 
@@ -250,6 +319,7 @@ struct NativeReaderState {
     paths: HashMap<u32, Vec<OwnedPathElement>>,
     next_path_id: u32,
     ip_version: u16,
+    read_sequence: u64,
 }
 
 #[napi(js_name = "NativeNetworkCursor")]
@@ -305,8 +375,9 @@ impl NativeNetworkCursor {
 impl NativeReader {
     #[napi(constructor)]
     pub fn new(env: Env, database: Buffer, cache_capacity: Option<u32>) -> Result<Self> {
+        let read_sequence = next_read_sequence();
         let source = memory_source(database.as_ref().to_vec())?;
-        Ok(create_reader(&env, source, cache_capacity))
+        Ok(create_reader(&env, source, read_sequence, cache_capacity))
     }
 
     #[napi]
@@ -314,8 +385,10 @@ impl NativeReader {
         if self.state()?.reader.is_none() {
             return Err(invalid_arg(ERR_CLOSED_DB));
         }
-        let new_reader = memory_source(database.as_ref().to_vec())?;
-        self.replace_reader(env, new_reader)
+        let read_sequence = next_read_sequence();
+        let new_reader = memory_source(database.as_ref().to_vec())
+            .map_err(|error| error_with_read_sequence(env, error, Some(read_sequence)))?;
+        self.replace_reader(env, new_reader, read_sequence)
     }
 
     #[napi(js_name = "reloadFromFile")]
@@ -323,13 +396,23 @@ impl NativeReader {
         if self.state()?.reader.is_none() {
             return Err(invalid_arg(ERR_CLOSED_DB));
         }
-        let new_reader = open_source(&path, mode.as_deref())?;
-        self.replace_reader(env, new_reader)
+        let (new_reader, read_sequence) =
+            open_source(&path, mode.as_deref()).map_err(|(error, read_sequence)| {
+                error_with_read_sequence(env, error, read_sequence)
+            })?;
+        self.replace_reader(env, new_reader, read_sequence)
     }
 
     #[napi(getter)]
     pub fn closed(&self) -> Result<bool> {
         Ok(self.state()?.reader.is_none())
+    }
+
+    /// Order in which the current database's read began, relative to every
+    /// other database read in the process. Larger numbers were read later.
+    #[napi(getter, js_name = "readSequence")]
+    pub fn read_sequence(&self) -> Result<f64> {
+        Ok(self.state()?.read_sequence as f64)
     }
 
     #[napi]
@@ -633,8 +716,14 @@ impl NativeReader {
         Ok(state)
     }
 
-    fn replace_reader(&self, env: &Env, new_reader: ReaderSource) -> Result<()> {
-        self.state_mut()?.replace_reader(env, new_reader)
+    fn replace_reader(
+        &self,
+        env: &Env,
+        new_reader: ReaderSource,
+        read_sequence: u64,
+    ) -> Result<()> {
+        self.state_mut()?
+            .replace_reader(env, new_reader, read_sequence)
     }
 
     fn state(&self) -> Result<Ref<'_, NativeReaderState>> {
@@ -651,7 +740,12 @@ impl NativeReader {
 }
 
 impl NativeReaderState {
-    fn replace_reader(&mut self, env: &Env, new_reader: ReaderSource) -> Result<()> {
+    fn replace_reader(
+        &mut self,
+        env: &Env,
+        new_reader: ReaderSource,
+        read_sequence: u64,
+    ) -> Result<()> {
         if self.reader.is_none() {
             return Err(invalid_arg(ERR_CLOSED_DB));
         }
@@ -659,6 +753,7 @@ impl NativeReaderState {
         self.clear_property_names();
         self.ip_version = new_reader.metadata().ip_version;
         self.reader = Some(SharedSource::new(env, new_reader));
+        self.read_sequence = read_sequence;
         Ok(())
     }
 
@@ -734,7 +829,9 @@ pub fn open_reader(
     mode: Option<String>,
     cache_capacity: Option<u32>,
 ) -> Result<NativeReader> {
-    open_source(&path, mode.as_deref()).map(|source| create_reader(&env, source, cache_capacity))
+    open_source(&path, mode.as_deref())
+        .map(|(source, read_sequence)| create_reader(&env, source, read_sequence, cache_capacity))
+        .map_err(|(error, _)| error)
 }
 
 #[napi(js_name = "openReaderAsync")]
@@ -747,7 +844,15 @@ pub fn open_reader_async(
         path,
         mode,
         cache_capacity,
+        failed_read_sequence: None,
     })
+}
+
+/// The most recently taken read sequence number. Any database read that
+/// begins after this call gets a larger number.
+#[napi(js_name = "currentReadSequence")]
+pub fn current_read_sequence() -> f64 {
+    READ_SEQUENCE.load(Ordering::SeqCst) as f64
 }
 
 #[napi(js_name = "nativeVersion")]
@@ -755,7 +860,12 @@ pub fn native_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-fn create_reader(env: &Env, source: ReaderSource, cache_capacity: Option<u32>) -> NativeReader {
+fn create_reader(
+    env: &Env,
+    source: ReaderSource,
+    read_sequence: u64,
+    cache_capacity: Option<u32>,
+) -> NativeReader {
     let ip_version = source.metadata().ip_version;
     let cache = cache_capacity
         .and_then(|capacity| NonZeroUsize::new(capacity as usize))
@@ -767,24 +877,29 @@ fn create_reader(env: &Env, source: ReaderSource, cache_capacity: Option<u32>) -
         paths: HashMap::new(),
         next_path_id: 0,
         ip_version,
+        read_sequence,
     };
     NativeReader {
         state: RefCell::new(state),
     }
 }
 
-fn open_source(path: &str, mode: Option<&str>) -> Result<ReaderSource> {
-    match mode.unwrap_or("mmap") {
-        "auto" | "mmap" => open_mmap_reader(Path::new(path)).map(ReaderSource::Mmap),
-        "memory" | "buffer" => open_memory_reader(Path::new(path)),
-        other => Err(invalid_arg(format!("Unsupported open mode: {other}"))),
+fn open_source(path: &str, mode: Option<&str>) -> ReadResult<ReaderSource> {
+    let mode = mode.unwrap_or("mmap");
+    if !matches!(mode, "auto" | "mmap" | "memory" | "buffer") {
+        return Err((invalid_arg(format!("Unsupported open mode: {mode}")), None));
     }
+    let (file, read_sequence) = open_file_with_sequence(Path::new(path))?;
+    let source = if matches!(mode, "auto" | "mmap") {
+        open_mmap_reader(file).map(ReaderSource::Mmap)
+    } else {
+        open_memory_reader(file)
+    }
+    .map_err(|error| (error, Some(read_sequence)))?;
+    Ok((source, read_sequence))
 }
 
-fn open_mmap_reader(path: &Path) -> Result<MaxMindReader<Mmap>> {
-    let file = File::open(path)
-        .map_err(MaxMindDbError::Io)
-        .map_err(open_error)?;
+fn open_mmap_reader(file: File) -> Result<MaxMindReader<Mmap>> {
     // SAFETY: The mapping is read-only. Callers should replace database files
     // atomically rather than mutating an open file in place.
     let mmap = unsafe { MmapOptions::new().map(&file) }
@@ -794,10 +909,7 @@ fn open_mmap_reader(path: &Path) -> Result<MaxMindReader<Mmap>> {
     MaxMindReader::from_source(mmap).map_err(open_error)
 }
 
-fn open_memory_reader(path: &Path) -> Result<ReaderSource> {
-    let mut file = File::open(path)
-        .map_err(MaxMindDbError::Io)
-        .map_err(open_error)?;
+fn open_memory_reader(mut file: File) -> Result<ReaderSource> {
     let mut prefix = [0_u8; 2];
     let mut prefix_len = 0;
     while prefix_len < prefix.len() {

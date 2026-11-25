@@ -233,7 +233,14 @@ declare namespace maxmind {
     metadata: Metadata;
     load(database: Buffer): void;
     reload(): void;
-    reloadAsync(): Promise<void>;
+    /**
+     * Opens the database file on a worker thread and swaps it in. Resolves to
+     * `true` when the replacement was installed, or `false` when a database
+     * read after this call read its file (by `load()`, `reload()`, another
+     * `reloadAsync()`, or a watched reload) was already installed, in which
+     * case the replacement is discarded and the reader is unchanged.
+     */
+    reloadAsync(): Promise<boolean>;
     close(): void;
     [Symbol.dispose](): void;
     clearCache(): void;
