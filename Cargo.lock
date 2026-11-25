@@ -197,6 +197,7 @@ version = "0.5.0"
 dependencies = [
  "arrayvec",
  "ipnetwork",
+ "libc",
  "lru",
  "maxminddb",
  "memmap2",

@@ -657,7 +657,11 @@ class Reader {
         if (!isStale()) {
           this._recordReloadFailure(
             startSequence + 0.5,
-            new Error(`Database file not found: ${filepath}`)
+            Object.assign(new Error(`Database file not found: ${filepath}`), {
+              code: 'ENOENT',
+              syscall: 'access',
+              path: filepath,
+            })
           );
         }
         return;

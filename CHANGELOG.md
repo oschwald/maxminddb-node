@@ -52,6 +52,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `watchForUpdatesHook`. `lastReloadError` follows the same order, so a
   failure or success that finishes late no longer overwrites the outcome of a
   later read.
+- File system errors from opening or reloading a database file, such as a
+  missing file or a permission error, now carry a Node-style `code` (such as
+  `ENOENT`, `EACCES` or `EISDIR`), `syscall` and `path`, and the message names
+  the file. Previously they had code `GenericFailure` and only the OS message.
+  Errors for invalid or gzip-compressed databases are unchanged. Opening a
+  directory now reports `EISDIR` in every mode. A watched reload that finds the
+  file missing also sets `code: 'ENOENT'` and `path` on `lastReloadError`,
+  which is now typed as `NodeJS.ErrnoException`.
 
 ## [0.5.0] - 2026-11-21
 
