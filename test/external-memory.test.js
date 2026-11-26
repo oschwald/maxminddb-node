@@ -14,7 +14,12 @@ const dataDir = path.join(
 );
 const metadataMarker = Buffer.from('\xab\xcd\xefMaxMind.com', 'latin1');
 const paddingBytes = 16 * 1024 * 1024;
-const readerCount = 24;
+// Readers created before the test stops adding pressure. If the external
+// memory report works, V8 collects some within the first few; if it does not,
+// this bounds what each failing test allocates (about 1 GiB).
+const maxReaders = 64;
+// How long to wait for cleanup callbacks once maxReaders have been created.
+const finalWaitMs = 5000;
 
 // Builds a valid database with unreferenced padding at the end of the data
 // section, so each in-memory reader holds a large native allocation while
@@ -38,38 +43,50 @@ function nextTurn() {
 // gc(), and counts how many JavaScript wrappers and native readers the
 // garbage collector reclaims. Without the external memory report V8 sees only
 // small objects and collects none of them.
+//
+// V8 collects on external memory pressure from incremental marking cycles it
+// schedules itself, and readers created while a cycle is marking survive it.
+// Whether a fixed batch of readers followed by an idle wait sees any
+// collection therefore depends on when those cycles run, and on the Linux
+// arm64 CI runner a batch of 24 sometimes saw none. Instead keep creating
+// readers, which keeps up the pressure that starts new cycles, until both
+// kinds of object have been seen to be collected, or until the cap is
+// reached and a final wait has passed.
 async function collectUnreferencedReaders(createReader) {
-  const collected = { wrappers: 0, native: 0 };
+  const collected = { wrappers: 0, native: 0, created: 0 };
   const registry = new FinalizationRegistry((kind) => {
     collected[kind] += 1;
   });
-  for (let index = 0; index < readerCount; index += 1) {
-    const reader = await createReader();
-    assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
-    registry.register(reader, 'wrappers');
-    registry.register(reader._reader, 'native');
-    await nextTurn();
-  }
-  // Collection and cleanup callbacks run as later tasks. Wait for them, but
-  // stop as soon as both kinds of object have been seen.
-  const deadline = Date.now() + 5000;
-  while (
-    (collected.wrappers === 0 || collected.native === 0) &&
-    Date.now() < deadline
-  ) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
+  let deadline;
+  while (collected.wrappers === 0 || collected.native === 0) {
+    if (collected.created < maxReaders) {
+      const reader = await createReader();
+      assert.equal(reader.get('175.16.199.1').country.iso_code, 'CN');
+      registry.register(reader, 'wrappers');
+      registry.register(reader._reader, 'native');
+      collected.created += 1;
+      await nextTurn();
+    } else {
+      // Collection and cleanup callbacks run as later tasks.
+      deadline ??= Date.now() + finalWaitMs;
+      if (Date.now() >= deadline) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
   }
   return collected;
 }
 
 function assertCollected(collected) {
+  const counts = `${collected.wrappers} wrappers and ${collected.native} native readers of ${collected.created} created`;
   assert(
     collected.wrappers > 0,
-    `expected some of ${readerCount} readers to be collected`
+    `expected some readers to be collected (${counts})`
   );
   assert(
     collected.native > 0,
-    `expected some of ${readerCount} native readers to be collected`
+    `expected some native readers to be collected (${counts})`
   );
 }
 
